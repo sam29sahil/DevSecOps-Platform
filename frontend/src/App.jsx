@@ -9,7 +9,8 @@ import "./App.css";
 
 import Dashboard from "./pages/Dashboard";
 import Projects from "./pages/Projects";
-import ProjectDetails from "./pages/ProjectDetails";
+import ProjectDetails from "./pages/ProjectDetails
+import Vulnerabilities from "./pages/Vulnerabilities";";
 
 function App() {
   return (
@@ -32,6 +33,12 @@ function App() {
         <Route
           path="/projects"
           element={<Projects />}
+        />
+
+        {/* Vulnerabilities */}
+        <Route
+          path="/vulnerabilities"
+          element={<Vulnerabilities />}
         />
 
         {/* Project Details */}
