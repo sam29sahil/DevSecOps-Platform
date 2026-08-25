@@ -1,16 +1,10 @@
-import {
-  BrowserRouter,
-  Routes,
-  Route,
-  Navigate,
-} from "react-router-dom";
-
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import "./App.css";
 
 import Dashboard from "./pages/Dashboard";
 import Projects from "./pages/Projects";
-import ProjectDetails from "./pages/ProjectDetails
-import Vulnerabilities from "./pages/Vulnerabilities";";
+import ProjectDetails from "./pages/ProjectDetails";
+import ScanDetails from "./pages/ScanDetails";
 
 function App() {
   return (
@@ -35,19 +29,19 @@ function App() {
           element={<Projects />}
         />
 
-        {/* Vulnerabilities */}
-        <Route
-          path="/vulnerabilities"
-          element={<Vulnerabilities />}
-        />
-
         {/* Project Details */}
         <Route
-          path="/projects/:id"
+          path="/projects/:projectId"
           element={<ProjectDetails />}
         />
 
-        {/* Unknown routes */}
+        {/* Scan Details */}
+        <Route
+          path="/scans/:scanId"
+          element={<ScanDetails />}
+        />
+
+        {/* Unknown URL */}
         <Route
           path="*"
           element={<Navigate to="/dashboard" replace />}

@@ -1,141 +1,208 @@
 const API_BASE_URL = "http://127.0.0.1:5000/api";
 
-export async function getProjects() {
-  const response = await fetch(`${API_BASE_URL}/projects`);
-
-  if (!response.ok) {
-    throw new Error("Failed to fetch projects");
-  }
-
-  return response.json();
-}
-
-export async function getProject(projectId) {
-  const response = await fetch(
-    `${API_BASE_URL}/projects/${projectId}`
-  );
-
-  if (!response.ok) {
-    throw new Error("Failed to fetch project");
-  }
-
-  return response.json();
-}
-
-export async function createProject(project) {
-  const response = await fetch(`${API_BASE_URL}/projects`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(project),
-  });
-
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(error.error || "Failed to create project");
-  }
-
-  return response.json();
-}
-
-export async function deleteProject(projectId) {
-  const response = await fetch(
-    `${API_BASE_URL}/projects/${projectId}`,
-    {
-      method: "DELETE",
-    }
-  );
-
-  if (!response.ok) {
-    throw new Error("Failed to delete project");
-  }
-
-  return response.json();
-}
-
-
 /* =========================================================
-   SECURITY SCANS
+   HELPER
 ========================================================= */
 
-export async function getScans(projectId = null) {
-  const url = projectId
-    ? `${API_BASE_URL}/scans?project_id=${projectId}`
-    : `${API_BASE_URL}/scans`;
+async function request(url, options = {}) {
+  const response = await fetch(url, {
+    ...options,
+    headers: {
+      ...(options.body ? { "Content-Type": "application/json" } : {}),
+      ...(options.headers || {}),
+    },
+  });
 
-  const response = await fetch(url);
+  let data = null;
 
-  if (!response.ok) {
-    throw new Error("Failed to fetch security scans");
+  try {
+    data = await response.json();
+  } catch {
+    data = null;
   }
 
-  return response.json();
-}
-
-export async function getScan(scanId) {
-  const response = await fetch(
-    `${API_BASE_URL}/scans/${scanId}`
-  );
-
   if (!response.ok) {
-    const error = await response.json().catch(() => ({}));
-
     throw new Error(
-      error.error || "Failed to fetch security scan"
+      data?.error ||
+        data?.message ||
+        `Request failed with status ${response.status}`
     );
   }
 
-  return response.json();
+  return data;
 }
 
-export async function runSecurityScan(projectId) {
-  const response = await fetch(`${API_BASE_URL}/scans`, {
+/* =========================================================
+   PROJECTS
+========================================================= */
+
+export async function getProjects() {
+  return request(`${API_BASE_URL}/projects`);
+}
+
+export async function getProject(projectId) {
+  return request(`${API_BASE_URL}/projects/${projectId}`);
+}
+
+export async function createProject(project) {
+  return request(`${API_BASE_URL}/projects`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
+    body: JSON.stringify(project),
+  });
+}
+
+export async function updateProject(projectId, project) {
+  return request(`${API_BASE_URL}/projects/${projectId}`, {
+    method: "PUT",
+    body: JSON.stringify(project),
+  });
+}
+
+export async function deleteProject(projectId) {
+  return request(`${API_BASE_URL}/projects/${projectId}`, {
+    method: "DELETE",
+  });
+}
+
+/* =========================================================
+   SCANS
+========================================================= */
+
+export async function getScans(projectId = null) {
+  let url = `${API_BASE_URL}/scans`;
+
+  if (projectId !== null && projectId !== undefined) {
+    url += `?project_id=${encodeURIComponent(projectId)}`;
+  }
+
+  return request(url);
+}
+
+export async function getScan(scanId) {
+  return request(`${API_BASE_URL}/scans/${scanId}`);
+}
+
+export async function runSecurityScan(projectId, sourceDirectory) {
+  return request(`${API_BASE_URL}/scans`, {
+    method: "POST",
     body: JSON.stringify({
       project_id: projectId,
+      source_directory: sourceDirectory,
     }),
   });
-
-  if (!response.ok) {
-    let errorMessage = "Failed to start security scan";
-
-    try {
-      const error = await response.json();
-      errorMessage = error.error || error.message || errorMessage;
-    } catch {
-      // Keep default error message
-    }
-
-    throw new Error(errorMessage);
-  }
-
-  return response.json();
 }
 
-export async function getVulnerabilities() {
-  const response = await fetch(
-    `${API_BASE_URL}/vulnerabilities`
-  );
+/* =========================================================
+   VULNERABILITIES
+========================================================= */
 
-  if (!response.ok) {
-    let errorMessage = "Failed to fetch vulnerabilities";
+/*
+  There is currently no /api/vulnerabilities endpoint
+  in your Flask backend.
 
+  Therefore we obtain vulnerabilities/findings from scans.
+*/
+
+export async function getVulnerabilities(projectId = null) {
+  const data = await getScans(projectId);
+
+  const scans = data?.scans || [];
+
+  const allFindings = [];
+
+  for (const scan of scans) {
     try {
-      const error = await response.json();
-      errorMessage =
-        error.error ||
-        error.message ||
-        errorMessage;
-    } catch {
-      // Keep default error message
-    }
+      const scanData = await getScan(scan.id);
 
-    throw new Error(errorMessage);
+      const findings = scanData?.findings || [];
+
+      findings.forEach((finding) => {
+        allFindings.push({
+          ...finding,
+          scan_id: scan.id,
+          project_id: scan.project_id,
+          project_name: scan.project_name,
+        });
+      });
+    } catch (error) {
+      console.error(
+        `Failed to load findings for scan ${scan.id}:`,
+        error
+      );
+    }
   }
 
-  return response.json();
+  return {
+    success: true,
+    count: allFindings.length,
+    vulnerabilities: allFindings,
+    findings: allFindings,
+  };
+}
+
+/* =========================================================
+   DASHBOARD
+========================================================= */
+
+export async function getDashboardData() {
+  const [projectsData, scansData] = await Promise.all([
+    getProjects(),
+    getScans(),
+  ]);
+
+  const projects = projectsData?.projects || [];
+  const scans = scansData?.scans || [];
+
+  const completedScans = scans.filter(
+    (scan) => scan.status === "completed"
+  );
+
+  const failedScans = scans.filter(
+    (scan) => scan.status === "failed"
+  );
+
+  const totalFindings = completedScans.reduce(
+    (total, scan) =>
+      total + Number(scan.total_findings || 0),
+    0
+  );
+
+  const scores = completedScans
+    .map((scan) => Number(scan.security_score))
+    .filter((score) => Number.isFinite(score));
+
+  const averageSecurityScore =
+    scores.length > 0
+      ? Math.round(
+          scores.reduce((sum, score) => sum + score, 0) /
+            scores.length
+        )
+      : 0;
+
+  return {
+    success: true,
+
+    projects,
+    scans,
+
+    statistics: {
+      total_projects: projects.length,
+      total_scans: scans.length,
+      completed_scans: completedScans.length,
+      failed_scans: failedScans.length,
+      total_findings: totalFindings,
+      average_security_score: averageSecurityScore,
+    },
+
+    /*
+      Aliases make the data easier for Dashboard.jsx
+      to consume without another API endpoint.
+    */
+    totalProjects: projects.length,
+    totalScans: scans.length,
+    completedScans: completedScans.length,
+    failedScans: failedScans.length,
+    totalFindings,
+    averageSecurityScore,
+  };
 }
