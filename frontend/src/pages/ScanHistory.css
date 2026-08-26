@@ -1,0 +1,661 @@
+.scan-history-page {
+  width: 100%;
+  max-width: 1600px;
+  margin: 0 auto;
+}
+
+/* =========================================================
+   HEADER
+========================================================= */
+
+.scan-history-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 30px;
+}
+
+.page-kicker {
+  margin-bottom: 9px;
+  color: #4f8cff;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 1.5px;
+}
+
+.scan-history-header h1 {
+  margin: 0;
+  color: #f8fafc;
+  font-size: 32px;
+  font-weight: 700;
+  letter-spacing: -0.8px;
+}
+
+.scan-history-header p {
+  margin: 8px 0 0;
+  color: #7894ba;
+  font-size: 14px;
+}
+
+.refresh-button {
+  height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  padding: 0 16px;
+  border: 1px solid #263e61;
+  border-radius: 9px;
+  background: #0a172a;
+  color: #a9c4e8;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background 0.2s ease,
+    border-color 0.2s ease,
+    color 0.2s ease;
+}
+
+.refresh-button:hover:not(:disabled) {
+  background: #10233d;
+  border-color: #3b5f8f;
+  color: #ffffff;
+}
+
+.refresh-button:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.spin {
+  animation: scan-history-spin 0.8s linear infinite;
+}
+
+@keyframes scan-history-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* =========================================================
+   ERROR
+========================================================= */
+
+.scan-history-error {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  padding: 14px 16px;
+  margin-bottom: 22px;
+  border: 1px solid #5d2832;
+  border-radius: 10px;
+  background: #21121a;
+  color: #fca5a5;
+}
+
+.scan-history-error > svg {
+  flex-shrink: 0;
+}
+
+.scan-history-error div {
+  flex: 1;
+  min-width: 0;
+}
+
+.scan-history-error strong,
+.scan-history-error span {
+  display: block;
+}
+
+.scan-history-error strong {
+  color: #fecaca;
+  font-size: 13px;
+}
+
+.scan-history-error span {
+  margin-top: 3px;
+  color: #c88991;
+  font-size: 12px;
+}
+
+.scan-history-error button {
+  border: 0;
+  background: transparent;
+  color: #ffffff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* =========================================================
+   STATISTICS
+========================================================= */
+
+.scan-history-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.history-stat-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 92px;
+  padding: 18px;
+  border: 1px solid #1b304d;
+  border-radius: 12px;
+  background: #081526;
+}
+
+.history-stat-icon {
+  width: 42px;
+  height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: 10px;
+}
+
+.history-stat-icon.blue {
+  background: rgba(37, 99, 235, 0.14);
+  color: #60a5fa;
+}
+
+.history-stat-icon.green {
+  background: rgba(34, 197, 94, 0.12);
+  color: #4ade80;
+}
+
+.history-stat-icon.yellow {
+  background: rgba(234, 179, 8, 0.12);
+  color: #facc15;
+}
+
+.history-stat-icon.red {
+  background: rgba(239, 68, 68, 0.12);
+  color: #f87171;
+}
+
+.history-stat-card span {
+  display: block;
+  color: #7190b8;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.history-stat-card strong {
+  display: block;
+  margin-top: 5px;
+  color: #f8fafc;
+  font-size: 24px;
+  font-weight: 700;
+}
+
+/* =========================================================
+   TOOLBAR
+========================================================= */
+
+.scan-history-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 18px;
+}
+
+.history-search {
+  width: min(430px, 100%);
+  height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 13px;
+  border: 1px solid #203858;
+  border-radius: 9px;
+  background: #09182b;
+  color: #6689b8;
+}
+
+.history-search:focus-within {
+  border-color: #316ee8;
+  box-shadow: 0 0 0 3px rgba(49, 110, 232, 0.1);
+}
+
+.history-search input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #ffffff;
+  font-size: 13px;
+}
+
+.history-search input::placeholder {
+  color: #5f7fa8;
+}
+
+.history-filter {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.history-filter label {
+  color: #718db3;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.history-filter select {
+  height: 42px;
+  min-width: 160px;
+  padding: 0 12px;
+  border: 1px solid #203858;
+  border-radius: 9px;
+  outline: 0;
+  background: #09182b;
+  color: #c3d7f1;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+/* =========================================================
+   MAIN CARD
+========================================================= */
+
+.scan-history-card {
+  overflow: hidden;
+  border: 1px solid #1b304d;
+  border-radius: 13px;
+  background: #071321;
+}
+
+.scan-history-card-header {
+  min-height: 78px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 22px;
+  border-bottom: 1px solid #172942;
+}
+
+.scan-history-card-header h2 {
+  margin: 0;
+  color: #f3f7fc;
+  font-size: 16px;
+  font-weight: 650;
+}
+
+.scan-history-card-header p {
+  margin: 5px 0 0;
+  color: #6684aa;
+  font-size: 12px;
+}
+
+.scan-count-badge {
+  min-width: 34px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 10px;
+  border: 1px solid #25436a;
+  border-radius: 8px;
+  background: #0b1d33;
+  color: #9fc2ed;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+/* =========================================================
+   TABLE
+========================================================= */
+
+.scan-table-wrapper {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.scan-history-table {
+  width: 100%;
+  min-width: 1050px;
+  border-collapse: collapse;
+}
+
+.scan-history-table th {
+  height: 48px;
+  padding: 0 18px;
+  border-bottom: 1px solid #172942;
+  background: #081526;
+  color: #6784a9;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.8px;
+  text-align: left;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.scan-history-table td {
+  height: 72px;
+  padding: 10px 18px;
+  border-bottom: 1px solid #12253d;
+  color: #b5c9e3;
+  font-size: 13px;
+  vertical-align: middle;
+}
+
+.scan-history-table tbody tr {
+  transition: background 0.15s ease;
+}
+
+.scan-history-table tbody tr:hover {
+  background: #0a1a2d;
+}
+
+.scan-history-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+/* =========================================================
+   SCAN CELL
+========================================================= */
+
+.scan-id {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+}
+
+.scan-id-icon {
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #213d61;
+  border-radius: 8px;
+  background: #0b1c31;
+  color: #6299ed;
+}
+
+.scan-id strong {
+  display: block;
+  color: #e8f0fa;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.scan-id span:not(.scan-id-icon) {
+  display: block;
+  margin-top: 3px;
+  color: #607fa7;
+  font-size: 11px;
+}
+
+.project-cell {
+  color: #b8cce5;
+  font-weight: 550;
+}
+
+/* =========================================================
+   STATUS
+========================================================= */
+
+.scan-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 28px;
+  padding: 0 9px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: capitalize;
+}
+
+.status-completed {
+  border-color: #1c5a3b;
+  background: #0d2b20;
+  color: #4ade80;
+}
+
+.status-failed {
+  border-color: #642d35;
+  background: #30151c;
+  color: #f87171;
+}
+
+.status-running {
+  border-color: #66551f;
+  background: #2d2711;
+  color: #facc15;
+}
+
+.status-unknown {
+  border-color: #28405f;
+  background: #0e1d31;
+  color: #8eafd6;
+}
+
+/* =========================================================
+   NUMBERS
+========================================================= */
+
+.table-number {
+  color: #b8cde6;
+  font-weight: 600;
+}
+
+.findings-clean {
+  color: #4ade80;
+  font-weight: 700;
+}
+
+.findings-warning {
+  color: #f87171;
+  font-weight: 700;
+}
+
+.score-value {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+}
+
+.score-value strong {
+  font-size: 15px;
+}
+
+.score-value span {
+  color: #627f9f;
+  font-size: 10px;
+}
+
+.score-good strong {
+  color: #4ade80;
+}
+
+.score-medium strong {
+  color: #facc15;
+}
+
+.score-danger strong {
+  color: #f87171;
+}
+
+.score-neutral {
+  color: #6c89ac;
+}
+
+.not-available {
+  color: #506d91;
+}
+
+.date-cell {
+  color: #7895ba;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* =========================================================
+   VIEW BUTTON
+========================================================= */
+
+.view-scan-button {
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  border: 1px solid #254568;
+  border-radius: 7px;
+  background: #0b1c31;
+  color: #8eb5e5;
+  font-size: 11px;
+  font-weight: 650;
+  cursor: pointer;
+  transition:
+    background 0.2s ease,
+    border-color 0.2s ease,
+    color 0.2s ease;
+}
+
+.view-scan-button:hover {
+  background: #112a47;
+  border-color: #376394;
+  color: #ffffff;
+}
+
+/* =========================================================
+   LOADING
+========================================================= */
+
+.history-loading {
+  min-height: 300px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  color: #718db3;
+  font-size: 13px;
+}
+
+.loading-spinner {
+  width: 30px;
+  height: 30px;
+  border: 3px solid #1b304d;
+  border-top-color: #3d7be8;
+  border-radius: 50%;
+  animation: scan-history-spin 0.8s linear infinite;
+}
+
+/* =========================================================
+   EMPTY
+========================================================= */
+
+.history-empty {
+  min-height: 330px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+  text-align: center;
+}
+
+.empty-icon {
+  width: 58px;
+  height: 58px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 15px;
+  border: 1px solid #203a5c;
+  border-radius: 14px;
+  background: #0b1c31;
+  color: #5d8fdc;
+}
+
+.history-empty h3 {
+  margin: 0;
+  color: #e6eef9;
+  font-size: 16px;
+}
+
+.history-empty p {
+  max-width: 430px;
+  margin: 8px 0 18px;
+  color: #6e89ad;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.history-empty button {
+  height: 40px;
+  padding: 0 15px;
+  border: 0;
+  border-radius: 8px;
+  background: #2864df;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.history-empty button:hover {
+  background: #3473ef;
+}
+
+/* =========================================================
+   RESPONSIVE
+========================================================= */
+
+@media (max-width: 1100px) {
+  .scan-history-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 700px) {
+  .scan-history-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .scan-history-header h1 {
+    font-size: 26px;
+  }
+
+  .scan-history-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .history-search {
+    width: 100%;
+  }
+
+  .history-filter {
+    justify-content: space-between;
+  }
+
+  .history-filter select {
+    flex: 1;
+  }
+
+  .scan-history-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .scan-history-card-header {
+    padding: 16px;
+  }
+}
