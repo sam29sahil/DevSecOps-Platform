@@ -1,21 +1,22 @@
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import "./App.css";
+import {
+  BrowserRouter,
+  Routes,
+  Route,
+} from "react-router-dom";
 
 import Dashboard from "./pages/Dashboard";
 import Projects from "./pages/Projects";
 import ProjectDetails from "./pages/ProjectDetails";
+
+import ScanHistory from "./pages/ScanHistory";
 import ScanDetails from "./pages/ScanDetails";
+import Vulnerabilities from "./pages/Vulnerabilities";
+import Pipelines from "./pages/Pipelines";
 
 function App() {
   return (
     <BrowserRouter>
       <Routes>
-
-        {/* Default */}
-        <Route
-          path="/"
-          element={<Navigate to="/dashboard" replace />}
-        />
 
         {/* Dashboard */}
         <Route
@@ -29,22 +30,31 @@ function App() {
           element={<Projects />}
         />
 
-        {/* Project Details */}
         <Route
           path="/projects/:projectId"
           element={<ProjectDetails />}
         />
 
-        {/* Scan Details */}
+        {/* Scans */}
+        <Route
+          path="/scan-history"
+          element={<ScanHistory />}
+        />
+
         <Route
           path="/scans/:scanId"
           element={<ScanDetails />}
         />
 
-        {/* Unknown URL */}
         <Route
-          path="*"
-          element={<Navigate to="/dashboard" replace />}
+          path="/vulnerabilities"
+          element={<Vulnerabilities />}
+        />
+
+        {/* Pipelines */}
+        <Route
+          path="/pipelines"
+          element={<Pipelines />}
         />
 
       </Routes>
