@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
 import DashboardLayout from "../layouts/DashboardLayout";
+
 import {
   getProjects,
   createProject,
@@ -19,6 +20,17 @@ function Projects() {
   const [creating, setCreating] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
 
+  /* =========================================================
+     SEARCH / FILTER
+  ========================================================= */
+
+  const [searchQuery, setSearchQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+
+  /* =========================================================
+     FORM
+  ========================================================= */
+
   const [formData, setFormData] = useState({
     name: "",
     branch: "main",
@@ -26,9 +38,9 @@ function Projects() {
     description: "",
   });
 
-  /* =======================================================
+  /* =========================================================
      LOAD PROJECTS
-  ======================================================= */
+  ========================================================= */
 
   async function loadProjects() {
     try {
@@ -49,10 +61,14 @@ function Projects() {
           : []
       );
     } catch (err) {
-      console.error("Projects loading error:", err);
+      console.error(
+        "Projects loading error:",
+        err
+      );
 
       setError(
-        err.message || "Failed to load projects."
+        err.message ||
+          "Failed to load projects."
       );
     } finally {
       setLoading(false);
@@ -63,9 +79,9 @@ function Projects() {
     loadProjects();
   }, []);
 
-  /* =======================================================
+  /* =========================================================
      FORM HANDLING
-  ======================================================= */
+  ========================================================= */
 
   function handleChange(event) {
     const { name, value } = event.target;
@@ -86,15 +102,17 @@ function Projects() {
   }
 
   function closeCreateForm() {
-    if (creating) return;
+    if (creating) {
+      return;
+    }
 
     resetForm();
     setShowCreateForm(false);
   }
 
-  /* =======================================================
+  /* =========================================================
      CREATE PROJECT
-  ======================================================= */
+  ========================================================= */
 
   async function handleCreateProject(event) {
     event.preventDefault();
@@ -110,16 +128,22 @@ function Projects() {
 
       const data = await createProject({
         name: formData.name.trim(),
-        branch: formData.branch.trim() || "main",
+
+        branch:
+          formData.branch.trim() ||
+          "main",
+
         repository_url:
           formData.repository_url.trim(),
+
         description:
           formData.description.trim(),
       });
 
       if (!data.success) {
         throw new Error(
-          data.error || "Failed to create project."
+          data.error ||
+            "Failed to create project."
         );
       }
 
@@ -128,94 +152,180 @@ function Projects() {
       resetForm();
       setShowCreateForm(false);
     } catch (err) {
-      console.error("Create project error:", err);
+      console.error(
+        "Create project error:",
+        err
+      );
 
       setError(
-        err.message || "Failed to create project."
+        err.message ||
+          "Failed to create project."
       );
     } finally {
       setCreating(false);
     }
   }
 
-  /* =======================================================
+  /* =========================================================
      DELETE PROJECT
-  ======================================================= */
+  ========================================================= */
 
-  async function handleDeleteProject(projectId) {
+  async function handleDeleteProject(
+    projectId
+  ) {
     const confirmed = window.confirm(
       "Are you sure you want to delete this project?"
     );
 
-    if (!confirmed) return;
+    if (!confirmed) {
+      return;
+    }
 
     try {
       setDeletingId(projectId);
       setError("");
 
-      const data = await deleteProject(projectId);
+      const data =
+        await deleteProject(projectId);
 
       if (!data.success) {
         throw new Error(
-          data.error || "Failed to delete project."
+          data.error ||
+            "Failed to delete project."
         );
       }
 
       setProjects((previous) =>
         previous.filter(
           (project) =>
-            Number(project.id) !== Number(projectId)
+            Number(project.id) !==
+            Number(projectId)
         )
       );
     } catch (err) {
-      console.error("Delete project error:", err);
+      console.error(
+        "Delete project error:",
+        err
+      );
 
       setError(
-        err.message || "Failed to delete project."
+        err.message ||
+          "Failed to delete project."
       );
     } finally {
       setDeletingId(null);
     }
   }
 
-  /* =======================================================
+  /* =========================================================
+     FILTER PROJECTS
+  ========================================================= */
+
+  const filteredProjects = useMemo(() => {
+    const query =
+      searchQuery.trim().toLowerCase();
+
+    return projects.filter((project) => {
+      const name = String(
+        project.name || ""
+      ).toLowerCase();
+
+      const description = String(
+        project.description || ""
+      ).toLowerCase();
+
+      const repository = String(
+        project.repository_url || ""
+      ).toLowerCase();
+
+      const branch = String(
+        project.branch || ""
+      ).toLowerCase();
+
+      const matchesSearch =
+        !query ||
+        name.includes(query) ||
+        description.includes(query) ||
+        repository.includes(query) ||
+        branch.includes(query);
+
+      const projectStatus = String(
+        project.status || "active"
+      ).toLowerCase();
+
+      const matchesStatus =
+        statusFilter === "all" ||
+        projectStatus === statusFilter;
+
+      return (
+        matchesSearch &&
+        matchesStatus
+      );
+    });
+  }, [
+    projects,
+    searchQuery,
+    statusFilter,
+  ]);
+
+  /* =========================================================
+     CLEAR FILTERS
+  ========================================================= */
+
+  function clearFilters() {
+    setSearchQuery("");
+    setStatusFilter("all");
+  }
+
+  /* =========================================================
      LOADING STATE
-  ======================================================= */
+  ========================================================= */
 
   if (loading) {
     return (
       <DashboardLayout>
         <div className="projects-page">
+
           <div className="page-header">
+
             <div>
               <div className="breadcrumb">
-                DevSecOps <span>/</span> Projects
+                DevSecOps
+                <span>/</span>
+                Projects
               </div>
 
               <h1>Projects</h1>
 
               <p>
-                Manage applications and repositories
-                connected to your DevSecOps pipelines.
+                Manage applications and
+                repositories connected to
+                your DevSecOps pipelines.
               </p>
             </div>
+
           </div>
 
           <div className="loading-state">
             <div className="loading-spinner"></div>
-            <span>Loading projects...</span>
+
+            <span>
+              Loading projects...
+            </span>
           </div>
+
         </div>
       </DashboardLayout>
     );
   }
 
-  /* =======================================================
+  /* =========================================================
      PAGE
-  ======================================================= */
+  ========================================================= */
 
   return (
     <DashboardLayout>
+
       <div className="projects-page">
 
         {/* =================================================
@@ -225,17 +335,21 @@ function Projects() {
         <div className="page-header projects-header">
 
           <div>
+
             <div className="breadcrumb">
-              DevSecOps <span>/</span>{" "}
+              DevSecOps
+              <span>/</span>
               <strong>Projects</strong>
             </div>
 
             <h1>Projects</h1>
 
             <p>
-              Manage applications and repositories
-              connected to your DevSecOps pipelines.
+              Manage applications and
+              repositories connected to
+              your DevSecOps pipelines.
             </p>
+
           </div>
 
           <button
@@ -247,7 +361,9 @@ function Projects() {
               )
             }
           >
-            + Create Project
+            {showCreateForm
+              ? "× Close"
+              : "+ Create Project"}
           </button>
 
         </div>
@@ -258,7 +374,10 @@ function Projects() {
 
         {error && (
           <div className="error-message">
-            <strong>Error:</strong> {error}
+
+            <strong>Error:</strong>{" "}
+            {error}
+
           </div>
         )}
 
@@ -270,24 +389,36 @@ function Projects() {
           <div className="create-project-panel">
 
             <div className="section-header">
+
               <div>
-                <h2>Create Project</h2>
+
+                <h2>
+                  Create Project
+                </h2>
 
                 <p>
-                  Connect an application repository
-                  to your DevSecOps platform.
+                  Connect an application
+                  repository to your
+                  DevSecOps platform.
                 </p>
+
               </div>
+
             </div>
 
             <form
               className="project-form"
-              onSubmit={handleCreateProject}
+              onSubmit={
+                handleCreateProject
+              }
             >
 
               <div className="form-grid">
 
+                {/* PROJECT NAME */}
+
                 <div className="form-group">
+
                   <label htmlFor="name">
                     Project Name
                   </label>
@@ -297,13 +428,19 @@ function Projects() {
                     name="name"
                     type="text"
                     value={formData.name}
-                    onChange={handleChange}
+                    onChange={
+                      handleChange
+                    }
                     placeholder="My Application"
                     required
                   />
+
                 </div>
 
+                {/* BRANCH */}
+
                 <div className="form-group">
+
                   <label htmlFor="branch">
                     Branch
                   </label>
@@ -312,15 +449,23 @@ function Projects() {
                     id="branch"
                     name="branch"
                     type="text"
-                    value={formData.branch}
-                    onChange={handleChange}
+                    value={
+                      formData.branch
+                    }
+                    onChange={
+                      handleChange
+                    }
                     placeholder="main"
                   />
+
                 </div>
 
               </div>
 
+              {/* REPOSITORY */}
+
               <div className="form-group">
+
                 <label htmlFor="repository_url">
                   Repository URL
                 </label>
@@ -329,13 +474,21 @@ function Projects() {
                   id="repository_url"
                   name="repository_url"
                   type="url"
-                  value={formData.repository_url}
-                  onChange={handleChange}
+                  value={
+                    formData.repository_url
+                  }
+                  onChange={
+                    handleChange
+                  }
                   placeholder="https://github.com/user/repository"
                 />
+
               </div>
 
+              {/* DESCRIPTION */}
+
               <div className="form-group">
+
                 <label htmlFor="description">
                   Description
                 </label>
@@ -344,18 +497,27 @@ function Projects() {
                   id="description"
                   name="description"
                   rows="4"
-                  value={formData.description}
-                  onChange={handleChange}
+                  value={
+                    formData.description
+                  }
+                  onChange={
+                    handleChange
+                  }
                   placeholder="Describe this project..."
                 />
+
               </div>
+
+              {/* FORM ACTIONS */}
 
               <div className="form-actions">
 
                 <button
                   type="button"
                   className="secondary-button"
-                  onClick={closeCreateForm}
+                  onClick={
+                    closeCreateForm
+                  }
                   disabled={creating}
                 >
                   Cancel
@@ -374,22 +536,114 @@ function Projects() {
               </div>
 
             </form>
+
           </div>
         )}
 
         {/* =================================================
-            PROJECT COUNT
+            SEARCH + FILTER TOOLBAR
         ================================================= */}
 
-        <div className="projects-count">
-          {projects.length}{" "}
-          {projects.length === 1
-            ? "project"
-            : "projects"}
-        </div>
+        {projects.length > 0 && (
+          <div className="projects-toolbar">
+
+            <div className="projects-count">
+
+              <strong>
+                {filteredProjects.length}
+              </strong>{" "}
+
+              {filteredProjects.length === 1
+                ? "project"
+                : "projects"}
+
+              {filteredProjects.length !==
+                projects.length && (
+                <span className="filter-count">
+                  {" "}
+                  of {projects.length}
+                </span>
+              )}
+
+            </div>
+
+            <div className="projects-filters">
+
+              {/* SEARCH */}
+
+              <div className="project-search">
+
+                <span className="search-icon">
+                  ⌕
+                </span>
+
+                <input
+                  type="text"
+                  placeholder="Search projects..."
+                  value={searchQuery}
+                  onChange={(event) =>
+                    setSearchQuery(
+                      event.target.value
+                    )
+                  }
+                />
+
+                {searchQuery && (
+                  <button
+                    type="button"
+                    className="clear-search"
+                    onClick={() =>
+                      setSearchQuery("")
+                    }
+                    aria-label="Clear search"
+                  >
+                    ×
+                  </button>
+                )}
+
+              </div>
+
+              {/* STATUS FILTER */}
+
+              <select
+                value={statusFilter}
+                onChange={(event) =>
+                  setStatusFilter(
+                    event.target.value
+                  )
+                }
+                className="status-filter"
+                aria-label="Filter by status"
+              >
+                <option value="all">
+                  All Status
+                </option>
+
+                <option value="active">
+                  Active
+                </option>
+
+                <option value="pending">
+                  Pending
+                </option>
+
+                <option value="inactive">
+                  Inactive
+                </option>
+
+                <option value="failed">
+                  Failed
+                </option>
+
+              </select>
+
+            </div>
+
+          </div>
+        )}
 
         {/* =================================================
-            EMPTY STATE
+            NO PROJECTS
         ================================================= */}
 
         {projects.length === 0 && (
@@ -399,11 +653,14 @@ function Projects() {
               ◇
             </div>
 
-            <h2>No projects yet</h2>
+            <h2>
+              No projects yet
+            </h2>
 
             <p>
-              Create your first project and connect
-              its repository to begin security scanning.
+              Create your first project
+              and connect its repository
+              to begin security scanning.
             </p>
 
             <button
@@ -420,130 +677,189 @@ function Projects() {
         )}
 
         {/* =================================================
+            NO FILTER RESULTS
+        ================================================= */}
+
+        {projects.length > 0 &&
+          filteredProjects.length === 0 && (
+            <div className="empty-state large-empty-state">
+
+              <div className="empty-icon">
+                ⌕
+              </div>
+
+              <h2>
+                No matching projects
+              </h2>
+
+              <p>
+                No projects match your
+                current search or status
+                filter.
+              </p>
+
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={clearFilters}
+              >
+                Clear Filters
+              </button>
+
+            </div>
+          )}
+
+        {/* =================================================
             PROJECT GRID
         ================================================= */}
 
-        {projects.length > 0 && (
+        {filteredProjects.length > 0 && (
           <div className="projects-grid">
 
-            {projects.map((project) => {
+            {filteredProjects.map(
+              (project) => {
 
-              const projectStatus =
-                String(
-                  project.status || "active"
-                ).toLowerCase();
+                const projectStatus =
+                  String(
+                    project.status ||
+                      "active"
+                  ).toLowerCase();
 
-              return (
-                <article
-                  className="project-card"
-                  key={project.id}
-                >
+                return (
+                  <article
+                    className="project-card"
+                    key={project.id}
+                  >
 
-                  {/* CARD HEADER */}
+                    {/* CARD HEADER */}
 
-                  <div className="project-card-header">
+                    <div className="project-card-header">
 
-                    <div>
-                      <h2>
-                        {project.name ||
-                          "Unnamed Project"}
-                      </h2>
+                      <div>
 
-                      <span className="project-id">
-                        #{project.id}
+                        <h2>
+                          {project.name ||
+                            "Unnamed Project"}
+                        </h2>
+
+                        <span className="project-id">
+                          #{project.id}
+                        </span>
+
+                      </div>
+
+                      <span
+                        className={`project-status status-${projectStatus}`}
+                      >
+                        {projectStatus}
                       </span>
+
                     </div>
 
-                    <span
-                      className={`project-status status-${projectStatus}`}
-                    >
-                      {projectStatus}
-                    </span>
+                    {/* DESCRIPTION */}
 
-                  </div>
+                    <p className="project-description">
 
-                  {/* DESCRIPTION */}
+                      {project.description ||
+                        "No project description provided."}
 
-                  <p className="project-description">
-                    {project.description ||
-                      "No project description provided."}
-                  </p>
+                    </p>
 
-                  {/* PROJECT META */}
+                    {/* META */}
 
-                  <div className="project-meta">
+                    <div className="project-meta">
 
-                    <div className="meta-item">
-                      <span>Branch</span>
+                      {/* BRANCH */}
 
-                      <strong>
-                        {project.branch || "main"}
-                      </strong>
-                    </div>
+                      <div className="meta-item">
 
-                    <div className="meta-item">
-                      <span>Repository</span>
+                        <span>
+                          Branch
+                        </span>
 
-                      {project.repository_url ? (
-                        <a
-                          href={
-                            project.repository_url
-                          }
-                          target="_blank"
-                          rel="noreferrer"
-                          className="repository-link"
-                        >
-                          {project.repository_url}
-                        </a>
-                      ) : (
                         <strong>
-                          Not connected
+                          {project.branch ||
+                            "main"}
                         </strong>
-                      )}
+
+                      </div>
+
+                      {/* REPOSITORY */}
+
+                      <div className="meta-item">
+
+                        <span>
+                          Repository
+                        </span>
+
+                        {project.repository_url ? (
+                          <a
+                            href={
+                              project.repository_url
+                            }
+                            target="_blank"
+                            rel="noreferrer"
+                            className="repository-link"
+                            title={
+                              project.repository_url
+                            }
+                          >
+                            {
+                              project.repository_url
+                            }
+                          </a>
+                        ) : (
+                          <strong>
+                            Not connected
+                          </strong>
+                        )}
+
+                      </div>
 
                     </div>
 
-                  </div>
+                    {/* CARD ACTIONS */}
 
-                  {/* CARD ACTIONS */}
+                    <div className="project-card-actions">
 
-                  <div className="project-card-actions">
+                      <Link
+                        to={`/projects/${project.id}`}
+                        className="secondary-button"
+                      >
+                        View Project
+                      </Link>
 
-                    <Link
-                      to={`/projects/${project.id}`}
-                      className="secondary-button"
-                    >
-                      View Project
-                    </Link>
-
-                    <button
-                      type="button"
-                      className="danger-button"
-                      onClick={() =>
-                        handleDeleteProject(
+                      <button
+                        type="button"
+                        className="danger-button"
+                        onClick={() =>
+                          handleDeleteProject(
+                            project.id
+                          )
+                        }
+                        disabled={
+                          deletingId ===
                           project.id
-                        )
-                      }
-                      disabled={
-                        deletingId ===
+                        }
+                      >
+                        {deletingId ===
                         project.id
-                      }
-                    >
-                      {deletingId === project.id
-                        ? "Deleting..."
-                        : "Delete"}
-                    </button>
+                          ? "Deleting..."
+                          : "Delete"}
+                      </button>
 
-                  </div>
+                    </div>
 
-                </article>
-              );
-            })}
+                  </article>
+                );
+              }
+            )}
 
           </div>
         )}
 
       </div>
+
     </DashboardLayout>
   );
 }

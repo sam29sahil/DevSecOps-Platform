@@ -1,11 +1,26 @@
 import { useEffect, useState } from "react";
 import DashboardLayout from "../layouts/DashboardLayout";
-import { getPipelines } from "../services/api";
+import {
+  getPipelines,
+  createPipeline,
+} from "../services/api";
 
 function Pipelines() {
   const [pipelines, setPipelines] = useState([]);
+
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+
+  const [showCreateForm, setShowCreateForm] = useState(false);
+  const [creating, setCreating] = useState(false);
+
+  const [form, setForm] = useState({
+    name: "",
+    description: "",
+    repository_url: "",
+    branch: "main",
+    project_id: "",
+  });
 
   async function loadPipelines() {
     try {
@@ -40,11 +55,94 @@ function Pipelines() {
     loadPipelines();
   }, []);
 
+  function handleChange(event) {
+    const { name, value } = event.target;
+
+    setForm((previous) => ({
+      ...previous,
+      [name]: value,
+    }));
+  }
+
+  function resetForm() {
+    setForm({
+      name: "",
+      description: "",
+      repository_url: "",
+      branch: "main",
+      project_id: "",
+    });
+  }
+
+  async function handleCreatePipeline(event) {
+    event.preventDefault();
+
+    if (!form.name.trim()) {
+      setError("Pipeline name is required.");
+      return;
+    }
+
+    try {
+      setCreating(true);
+      setError("");
+
+      const payload = {
+        name: form.name.trim(),
+        description: form.description.trim(),
+        repository_url: form.repository_url.trim(),
+        branch: form.branch.trim() || "main",
+      };
+
+      if (form.project_id.trim()) {
+        payload.project_id = Number(form.project_id);
+      }
+
+      const data = await createPipeline(payload);
+
+      if (!data.success) {
+        throw new Error(
+          data.error || "Failed to create pipeline."
+        );
+      }
+
+      resetForm();
+      setShowCreateForm(false);
+
+      await loadPipelines();
+    } catch (err) {
+      console.error("Create pipeline error:", err);
+
+      setError(
+        err.message || "Failed to create pipeline."
+      );
+    } finally {
+      setCreating(false);
+    }
+  }
+
   function getStatusClass(status) {
     return String(status || "pending")
       .toLowerCase()
       .replace(/\s+/g, "-");
   }
+
+  const successfulCount = pipelines.filter((pipeline) =>
+    ["success", "successful", "completed"].includes(
+      String(pipeline.status || "").toLowerCase()
+    )
+  ).length;
+
+  const runningCount = pipelines.filter(
+    (pipeline) =>
+      String(pipeline.status || "").toLowerCase() ===
+      "running"
+  ).length;
+
+  const failedCount = pipelines.filter(
+    (pipeline) =>
+      String(pipeline.status || "").toLowerCase() ===
+      "failed"
+  ).length;
 
   return (
     <DashboardLayout>
@@ -71,10 +169,187 @@ function Pipelines() {
           <button
             className="primary-button"
             type="button"
+            onClick={() => {
+              setError("");
+              setShowCreateForm(true);
+            }}
           >
             + New Pipeline
           </button>
         </div>
+
+        {/* =================================================
+            ERROR
+        ================================================= */}
+
+        {error && (
+          <div className="pipeline-error">
+            <span>{error}</span>
+
+            <button
+              type="button"
+              onClick={() => setError("")}
+            >
+              ×
+            </button>
+          </div>
+        )}
+
+        {/* =================================================
+            CREATE PIPELINE
+        ================================================= */}
+
+        {showCreateForm && (
+          <div className="content-card pipeline-create-card">
+
+            <div className="card-header">
+              <div>
+                <h2>Create Pipeline</h2>
+
+                <p>
+                  Configure a new CI/CD pipeline.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                className="close-button"
+                onClick={() => {
+                  setShowCreateForm(false);
+                  resetForm();
+                  setError("");
+                }}
+              >
+                ×
+              </button>
+            </div>
+
+            <form
+              className="pipeline-form"
+              onSubmit={handleCreatePipeline}
+            >
+
+              <div className="form-grid">
+
+                {/* NAME */}
+
+                <div className="form-group">
+                  <label htmlFor="pipeline-name">
+                    Pipeline Name
+                  </label>
+
+                  <input
+                    id="pipeline-name"
+                    name="name"
+                    type="text"
+                    value={form.name}
+                    onChange={handleChange}
+                    placeholder="Production CI/CD"
+                    required
+                  />
+                </div>
+
+                {/* PROJECT ID */}
+
+                <div className="form-group">
+                  <label htmlFor="pipeline-project">
+                    Project ID
+                  </label>
+
+                  <input
+                    id="pipeline-project"
+                    name="project_id"
+                    type="number"
+                    min="1"
+                    value={form.project_id}
+                    onChange={handleChange}
+                    placeholder="1"
+                  />
+                </div>
+
+                {/* REPOSITORY */}
+
+                <div className="form-group form-group-full">
+                  <label htmlFor="pipeline-repository">
+                    Repository URL
+                  </label>
+
+                  <input
+                    id="pipeline-repository"
+                    name="repository_url"
+                    type="url"
+                    value={form.repository_url}
+                    onChange={handleChange}
+                    placeholder="https://github.com/username/repository"
+                  />
+                </div>
+
+                {/* BRANCH */}
+
+                <div className="form-group">
+                  <label htmlFor="pipeline-branch">
+                    Branch
+                  </label>
+
+                  <input
+                    id="pipeline-branch"
+                    name="branch"
+                    type="text"
+                    value={form.branch}
+                    onChange={handleChange}
+                    placeholder="main"
+                  />
+                </div>
+
+                {/* DESCRIPTION */}
+
+                <div className="form-group form-group-full">
+                  <label htmlFor="pipeline-description">
+                    Description
+                  </label>
+
+                  <textarea
+                    id="pipeline-description"
+                    name="description"
+                    value={form.description}
+                    onChange={handleChange}
+                    placeholder="Describe what this pipeline does..."
+                    rows="4"
+                  />
+                </div>
+
+              </div>
+
+              <div className="pipeline-form-actions">
+
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => {
+                    setShowCreateForm(false);
+                    resetForm();
+                    setError("");
+                  }}
+                  disabled={creating}
+                >
+                  Cancel
+                </button>
+
+                <button
+                  type="submit"
+                  className="primary-button"
+                  disabled={creating}
+                >
+                  {creating
+                    ? "Creating..."
+                    : "Create Pipeline"}
+                </button>
+
+              </div>
+
+            </form>
+          </div>
+        )}
 
         {/* =================================================
             SUMMARY
@@ -85,9 +360,7 @@ function Pipelines() {
           <div className="pipeline-summary-card">
             <span>Total Pipelines</span>
 
-            <strong>
-              {pipelines.length}
-            </strong>
+            <strong>{pipelines.length}</strong>
 
             <small>
               Configured pipelines
@@ -97,19 +370,7 @@ function Pipelines() {
           <div className="pipeline-summary-card">
             <span>Successful</span>
 
-            <strong>
-              {
-                pipelines.filter(
-                  (pipeline) =>
-                    ["success", "successful", "completed"]
-                      .includes(
-                        String(
-                          pipeline.status || ""
-                        ).toLowerCase()
-                      )
-                ).length
-              }
-            </strong>
+            <strong>{successfulCount}</strong>
 
             <small>
               Completed successfully
@@ -119,16 +380,7 @@ function Pipelines() {
           <div className="pipeline-summary-card">
             <span>Running</span>
 
-            <strong>
-              {
-                pipelines.filter(
-                  (pipeline) =>
-                    String(
-                      pipeline.status || ""
-                    ).toLowerCase() === "running"
-                ).length
-              }
-            </strong>
+            <strong>{runningCount}</strong>
 
             <small>
               Currently executing
@@ -138,16 +390,7 @@ function Pipelines() {
           <div className="pipeline-summary-card">
             <span>Failed</span>
 
-            <strong>
-              {
-                pipelines.filter(
-                  (pipeline) =>
-                    String(
-                      pipeline.status || ""
-                    ).toLowerCase() === "failed"
-                ).length
-              }
-            </strong>
+            <strong>{failedCount}</strong>
 
             <small>
               Require attention
@@ -157,7 +400,7 @@ function Pipelines() {
         </div>
 
         {/* =================================================
-            PIPELINES
+            PIPELINES LIST
         ================================================= */}
 
         <div className="content-card">
@@ -191,32 +434,6 @@ function Pipelines() {
             </div>
           )}
 
-          {/* ERROR */}
-
-          {!loading && error && (
-            <div className="empty-state">
-              <div className="empty-state-icon">
-                !
-              </div>
-
-              <h3>
-                Unable to load pipelines
-              </h3>
-
-              <p>
-                {error}
-              </p>
-
-              <button
-                className="secondary-button"
-                type="button"
-                onClick={loadPipelines}
-              >
-                Retry
-              </button>
-            </div>
-          )}
-
           {/* EMPTY */}
 
           {!loading &&
@@ -233,9 +450,20 @@ function Pipelines() {
                 </h3>
 
                 <p>
-                  Connect a repository to start your
-                  first DevSecOps pipeline.
+                  Create your first DevSecOps CI/CD
+                  pipeline to get started.
                 </p>
+
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => {
+                    setError("");
+                    setShowCreateForm(true);
+                  }}
+                >
+                  Create Pipeline
+                </button>
 
               </div>
             )}
@@ -247,12 +475,10 @@ function Pipelines() {
             pipelines.length > 0 && (
               <div className="pipeline-list">
 
-                {pipelines.map((pipeline, index) => (
+                {pipelines.map((pipeline) => (
                   <div
                     className="pipeline-card"
-                    key={
-                      pipeline.id || index
-                    }
+                    key={pipeline.id}
                   >
 
                     <div className="pipeline-main">
@@ -264,11 +490,7 @@ function Pipelines() {
                       <div>
                         <h3>
                           {pipeline.name ||
-                            pipeline.pipeline_name ||
-                            `Pipeline #${
-                              pipeline.id ||
-                              index + 1
-                            }`}
+                            `Pipeline #${pipeline.id}`}
                         </h3>
 
                         <p>
@@ -287,7 +509,7 @@ function Pipelines() {
                         )}`}
                       >
                         {pipeline.status ||
-                          "Pending"}
+                          "pending"}
                       </span>
 
                       <span className="pipeline-branch">

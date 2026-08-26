@@ -6,11 +6,11 @@ const API_BASE_URL = "http://127.0.0.1:5000/api";
 
 async function request(endpoint, options = {}) {
   const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+    ...options,
     headers: {
       "Content-Type": "application/json",
       ...(options.headers || {}),
     },
-    ...options,
   });
 
   let data = {};
@@ -59,6 +59,13 @@ export async function createProject(projectData) {
   });
 }
 
+export async function updateProject(projectId, projectData) {
+  return request(`/projects/${projectId}`, {
+    method: "PUT",
+    body: JSON.stringify(projectData),
+  });
+}
+
 export async function deleteProject(projectId) {
   return request(`/projects/${projectId}`, {
     method: "DELETE",
@@ -69,8 +76,12 @@ export async function deleteProject(projectId) {
    SCANS
 ========================================================= */
 
-export async function getScans() {
-  return request("/scans");
+export async function getScans(projectId = null) {
+  const endpoint = projectId
+    ? `/scans?project_id=${encodeURIComponent(projectId)}`
+    : "/scans";
+
+  return request(endpoint);
 }
 
 export async function getScan(scanId) {
@@ -90,37 +101,46 @@ export async function startScan(scanData) {
 
 export async function getProjectScans(projectId) {
   try {
-    return await request(`/projects/${projectId}/scans`);
+    return await request(
+      `/projects/${projectId}/scans`
+    );
   } catch (error) {
     console.warn(
       "Project scan endpoint unavailable. Falling back to /scans.",
       error.message
     );
 
-    const data = await getScans();
-
-    const allScans = Array.isArray(data.scans)
-      ? data.scans
-      : [];
-
-    const projectScans = allScans.filter(
-      (scan) =>
-        Number(scan.project_id) === Number(projectId)
-    );
+    const data = await getScans(projectId);
 
     return {
       success: true,
-      scans: projectScans,
+      scans: Array.isArray(data.scans)
+        ? data.scans
+        : [],
     };
   }
 }
 
 /* =========================================================
-   HEALTH
+   VULNERABILITIES
 ========================================================= */
 
-export async function getHealth() {
-  return request("/health");
+export async function getVulnerabilities(filters = {}) {
+  const params = new URLSearchParams();
+
+  if (filters.project_id) {
+    params.append("project_id", filters.project_id);
+  }
+
+  if (filters.severity) {
+    params.append("severity", filters.severity);
+  }
+
+  const query = params.toString();
+
+  return request(
+    `/vulnerabilities${query ? `?${query}` : ""}`
+  );
 }
 
 /* =========================================================
@@ -135,10 +155,30 @@ export async function getPipeline(pipelineId) {
   return request(`/pipelines/${pipelineId}`);
 }
 
+export async function createPipeline(pipelineData) {
+  return request("/pipelines", {
+    method: "POST",
+    body: JSON.stringify(pipelineData),
+  });
+}
+
+export async function updatePipeline(pipelineId, pipelineData) {
+  return request(`/pipelines/${pipelineId}`, {
+    method: "PUT",
+    body: JSON.stringify(pipelineData),
+  });
+}
+
+export async function deletePipeline(pipelineId) {
+  return request(`/pipelines/${pipelineId}`, {
+    method: "DELETE",
+  });
+}
+
 /* =========================================================
-   VULNERABILITIES
+   HEALTH
 ========================================================= */
 
-export async function getVulnerabilities() {
-  return request("/vulnerabilities");
+export async function getHealth() {
+  return request("/health");
 }
