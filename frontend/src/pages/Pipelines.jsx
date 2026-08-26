@@ -1,26 +1,38 @@
-import { useEffect, useState } from "react";
-import DashboardLayout from "../layouts/DashboardLayout";
+import { useEffect, useMemo, useState } from "react";
 import {
   getPipelines,
   createPipeline,
+  deletePipeline,
+  runPipeline,
 } from "../services/api";
 
 function Pipelines() {
   const [pipelines, setPipelines] = useState([]);
 
   const [loading, setLoading] = useState(true);
+  const [runningId, setRunningId] = useState(null);
+  const [deletingId, setDeletingId] = useState(null);
+
   const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
 
   const [showCreateForm, setShowCreateForm] = useState(false);
-  const [creating, setCreating] = useState(false);
 
   const [form, setForm] = useState({
     name: "",
     description: "",
     repository_url: "",
     branch: "main",
-    project_id: "",
+    project_id: "4",
   });
+
+  const [lastRunFindings, setLastRunFindings] = useState([]);
+  const [lastRunPipeline, setLastRunPipeline] = useState(null);
+  const [lastRunScan, setLastRunScan] = useState(null);
+
+  /* ========================================================
+     LOAD PIPELINES
+  ======================================================== */
 
   async function loadPipelines() {
     try {
@@ -41,8 +53,6 @@ function Pipelines() {
           : []
       );
     } catch (err) {
-      console.error("Pipeline loading error:", err);
-
       setError(
         err.message || "Failed to load pipelines."
       );
@@ -55,7 +65,11 @@ function Pipelines() {
     loadPipelines();
   }, []);
 
-  function handleChange(event) {
+  /* ========================================================
+     CREATE PIPELINE
+  ======================================================== */
+
+  function handleFormChange(event) {
     const { name, value } = event.target;
 
     setForm((previous) => ({
@@ -64,38 +78,32 @@ function Pipelines() {
     }));
   }
 
-  function resetForm() {
-    setForm({
-      name: "",
-      description: "",
-      repository_url: "",
-      branch: "main",
-      project_id: "",
-    });
-  }
-
   async function handleCreatePipeline(event) {
     event.preventDefault();
 
-    if (!form.name.trim()) {
-      setError("Pipeline name is required.");
-      return;
-    }
-
     try {
-      setCreating(true);
       setError("");
+      setSuccess("");
+
+      if (!form.name.trim()) {
+        setError("Pipeline name is required.");
+        return;
+      }
+
+      if (!form.repository_url.trim()) {
+        setError("Repository URL is required.");
+        return;
+      }
 
       const payload = {
         name: form.name.trim(),
         description: form.description.trim(),
         repository_url: form.repository_url.trim(),
         branch: form.branch.trim() || "main",
+        project_id: form.project_id
+          ? Number(form.project_id)
+          : null,
       };
-
-      if (form.project_id.trim()) {
-        payload.project_id = Number(form.project_id);
-      }
 
       const data = await createPipeline(payload);
 
@@ -105,430 +113,920 @@ function Pipelines() {
         );
       }
 
-      resetForm();
+      setSuccess(
+        data.message ||
+          "Pipeline created successfully."
+      );
+
+      setForm({
+        name: "",
+        description: "",
+        repository_url: "",
+        branch: "main",
+        project_id: "4",
+      });
+
       setShowCreateForm(false);
 
       await loadPipelines();
     } catch (err) {
-      console.error("Create pipeline error:", err);
-
       setError(
         err.message || "Failed to create pipeline."
       );
-    } finally {
-      setCreating(false);
     }
   }
 
-  function getStatusClass(status) {
-    return String(status || "pending")
-      .toLowerCase()
-      .replace(/\s+/g, "-");
+  /* ========================================================
+     RUN PIPELINE
+  ======================================================== */
+
+  async function handleRunPipeline(pipelineId) {
+    try {
+      setRunningId(pipelineId);
+      setError("");
+      setSuccess("");
+
+      setLastRunFindings([]);
+      setLastRunPipeline(null);
+      setLastRunScan(null);
+
+      const data = await runPipeline(pipelineId);
+
+      if (!data.success) {
+        throw new Error(
+          data.error || "Pipeline execution failed."
+        );
+      }
+
+      setLastRunPipeline(data.pipeline || null);
+      setLastRunScan(data.scan || null);
+      setLastRunFindings(
+        Array.isArray(data.findings)
+          ? data.findings
+          : []
+      );
+
+      setSuccess(
+        data.message ||
+          "Pipeline completed successfully."
+      );
+
+      await loadPipelines();
+    } catch (err) {
+      setError(
+        err.message || "Failed to run pipeline."
+      );
+    } finally {
+      setRunningId(null);
+    }
   }
 
-  const successfulCount = pipelines.filter((pipeline) =>
-    ["success", "successful", "completed"].includes(
-      String(pipeline.status || "").toLowerCase()
-    )
-  ).length;
+  /* ========================================================
+     DELETE PIPELINE
+  ======================================================== */
 
-  const runningCount = pipelines.filter(
-    (pipeline) =>
-      String(pipeline.status || "").toLowerCase() ===
-      "running"
-  ).length;
+  async function handleDeletePipeline(pipelineId) {
+    const confirmed = window.confirm(
+      "Are you sure you want to delete this pipeline?"
+    );
 
-  const failedCount = pipelines.filter(
-    (pipeline) =>
-      String(pipeline.status || "").toLowerCase() ===
-      "failed"
-  ).length;
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      setDeletingId(pipelineId);
+      setError("");
+      setSuccess("");
+
+      const data = await deletePipeline(
+        pipelineId
+      );
+
+      if (!data.success) {
+        throw new Error(
+          data.error || "Failed to delete pipeline."
+        );
+      }
+
+      setSuccess(
+        data.message ||
+          "Pipeline deleted successfully."
+      );
+
+      await loadPipelines();
+    } catch (err) {
+      setError(
+        err.message || "Failed to delete pipeline."
+      );
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
+  /* ========================================================
+     STATISTICS
+  ======================================================== */
+
+  const statistics = useMemo(() => {
+    const total = pipelines.length;
+
+    const successful = pipelines.filter(
+      (pipeline) =>
+        ["success", "successful", "completed"].includes(
+          String(pipeline.status || "").toLowerCase()
+        )
+    ).length;
+
+    const running = pipelines.filter(
+      (pipeline) =>
+        String(pipeline.status || "").toLowerCase() ===
+        "running"
+    ).length;
+
+    const failed = pipelines.filter(
+      (pipeline) =>
+        ["failed", "failure", "error"].includes(
+          String(pipeline.status || "").toLowerCase()
+        )
+    ).length;
+
+    const pending = pipelines.filter(
+      (pipeline) =>
+        ["pending", "queued"].includes(
+          String(pipeline.status || "").toLowerCase()
+        )
+    ).length;
+
+    return {
+      total,
+      successful,
+      running,
+      failed,
+      pending,
+    };
+  }, [pipelines]);
+
+  /* ========================================================
+     STATUS CLASS
+  ======================================================== */
+
+  function getStatusClass(status) {
+    const value = String(
+      status || "pending"
+    ).toLowerCase();
+
+    if (
+      value === "success" ||
+      value === "successful" ||
+      value === "completed"
+    ) {
+      return "pipeline-status success";
+    }
+
+    if (value === "running") {
+      return "pipeline-status running";
+    }
+
+    if (
+      value === "failed" ||
+      value === "failure" ||
+      value === "error"
+    ) {
+      return "pipeline-status failed";
+    }
+
+    return "pipeline-status pending";
+  }
+
+  /* ========================================================
+     RENDER
+  ======================================================== */
 
   return (
-    <DashboardLayout>
-      <div className="pipelines-page">
+    <div className="pipelines-page">
 
-        {/* =================================================
-            HEADER
-        ================================================= */}
+      {/* ====================================================
+          HEADER
+      ==================================================== */}
 
-        <div className="page-header">
-          <div>
-            <div className="page-breadcrumb">
-              DevSecOps <span>/</span> Pipelines
-            </div>
+      <div className="page-header">
 
-            <h1>Pipelines</h1>
+        <div>
+          <h1>CI/CD Pipelines</h1>
 
-            <p>
-              Manage and monitor your DevSecOps CI/CD
-              pipelines.
-            </p>
-          </div>
+          <p>
+            Automate security scanning and monitor
+            DevSecOps pipeline execution.
+          </p>
+        </div>
+
+        <div
+          style={{
+            display: "flex",
+            gap: "10px",
+          }}
+        >
+          <button
+            className="secondary-button"
+            onClick={loadPipelines}
+            disabled={loading}
+          >
+            ↻ Refresh
+          </button>
 
           <button
             className="primary-button"
-            type="button"
-            onClick={() => {
-              setError("");
-              setShowCreateForm(true);
-            }}
+            onClick={() =>
+              setShowCreateForm(
+                (previous) => !previous
+              )
+            }
           >
-            + New Pipeline
+            + Create Pipeline
           </button>
         </div>
 
-        {/* =================================================
-            ERROR
-        ================================================= */}
+      </div>
 
-        {error && (
-          <div className="pipeline-error">
-            <span>{error}</span>
+      {/* ====================================================
+          MESSAGES
+      ==================================================== */}
 
-            <button
-              type="button"
-              onClick={() => setError("")}
-            >
-              ×
-            </button>
-          </div>
-        )}
+      {error && (
+        <div className="error-message">
+          <strong>Error</strong>
+          <p>{error}</p>
+        </div>
+      )}
 
-        {/* =================================================
-            CREATE PIPELINE
-        ================================================= */}
+      {success && (
+        <div
+          className="success-message"
+          style={{
+            marginBottom: "20px",
+          }}
+        >
+          {success}
+        </div>
+      )}
 
-        {showCreateForm && (
-          <div className="content-card pipeline-create-card">
+      {/* ====================================================
+          CREATE FORM
+      ==================================================== */}
 
-            <div className="card-header">
-              <div>
-                <h2>Create Pipeline</h2>
+      {showCreateForm && (
+        <div
+          className="dashboard-panel"
+          style={{
+            marginBottom: "24px",
+          }}
+        >
+          <h2>Create Security Pipeline</h2>
 
-                <p>
-                  Configure a new CI/CD pipeline.
-                </p>
+          <p>
+            Configure a repository that should be scanned
+            by the DevSecOps security engine.
+          </p>
+
+          <form
+            onSubmit={handleCreatePipeline}
+            style={{
+              marginTop: "20px",
+            }}
+          >
+
+            <div className="form-grid">
+
+              <div className="form-group">
+                <label>
+                  Pipeline Name
+                </label>
+
+                <input
+                  type="text"
+                  name="name"
+                  value={form.name}
+                  onChange={handleFormChange}
+                  placeholder="Security Scan Pipeline"
+                />
               </div>
+
+              <div className="form-group">
+                <label>
+                  Branch
+                </label>
+
+                <input
+                  type="text"
+                  name="branch"
+                  value={form.branch}
+                  onChange={handleFormChange}
+                  placeholder="main"
+                />
+              </div>
+
+              <div
+                className="form-group"
+                style={{
+                  gridColumn:
+                    "1 / -1",
+                }}
+              >
+                <label>
+                  Repository URL
+                </label>
+
+                <input
+                  type="url"
+                  name="repository_url"
+                  value={
+                    form.repository_url
+                  }
+                  onChange={handleFormChange}
+                  placeholder="https://github.com/user/project.git"
+                />
+              </div>
+
+              <div className="form-group">
+                <label>
+                  Project ID
+                </label>
+
+                <input
+                  type="number"
+                  name="project_id"
+                  value={form.project_id}
+                  onChange={handleFormChange}
+                  placeholder="4"
+                />
+              </div>
+
+              <div className="form-group">
+                <label>
+                  Description
+                </label>
+
+                <input
+                  type="text"
+                  name="description"
+                  value={form.description}
+                  onChange={handleFormChange}
+                  placeholder="Automated security scanning pipeline"
+                />
+              </div>
+
+            </div>
+
+            <div
+              style={{
+                display: "flex",
+                gap: "10px",
+                marginTop: "20px",
+              }}
+            >
+              <button
+                type="submit"
+                className="primary-button"
+              >
+                Create Pipeline
+              </button>
 
               <button
                 type="button"
-                className="close-button"
-                onClick={() => {
-                  setShowCreateForm(false);
-                  resetForm();
-                  setError("");
-                }}
+                className="secondary-button"
+                onClick={() =>
+                  setShowCreateForm(false)
+                }
               >
-                ×
+                Cancel
               </button>
             </div>
 
-            <form
-              className="pipeline-form"
-              onSubmit={handleCreatePipeline}
-            >
+          </form>
+        </div>
+      )}
 
-              <div className="form-grid">
+      {/* ====================================================
+          SUMMARY
+      ==================================================== */}
 
-                {/* NAME */}
+      <div className="pipeline-summary">
 
-                <div className="form-group">
-                  <label htmlFor="pipeline-name">
-                    Pipeline Name
-                  </label>
-
-                  <input
-                    id="pipeline-name"
-                    name="name"
-                    type="text"
-                    value={form.name}
-                    onChange={handleChange}
-                    placeholder="Production CI/CD"
-                    required
-                  />
-                </div>
-
-                {/* PROJECT ID */}
-
-                <div className="form-group">
-                  <label htmlFor="pipeline-project">
-                    Project ID
-                  </label>
-
-                  <input
-                    id="pipeline-project"
-                    name="project_id"
-                    type="number"
-                    min="1"
-                    value={form.project_id}
-                    onChange={handleChange}
-                    placeholder="1"
-                  />
-                </div>
-
-                {/* REPOSITORY */}
-
-                <div className="form-group form-group-full">
-                  <label htmlFor="pipeline-repository">
-                    Repository URL
-                  </label>
-
-                  <input
-                    id="pipeline-repository"
-                    name="repository_url"
-                    type="url"
-                    value={form.repository_url}
-                    onChange={handleChange}
-                    placeholder="https://github.com/username/repository"
-                  />
-                </div>
-
-                {/* BRANCH */}
-
-                <div className="form-group">
-                  <label htmlFor="pipeline-branch">
-                    Branch
-                  </label>
-
-                  <input
-                    id="pipeline-branch"
-                    name="branch"
-                    type="text"
-                    value={form.branch}
-                    onChange={handleChange}
-                    placeholder="main"
-                  />
-                </div>
-
-                {/* DESCRIPTION */}
-
-                <div className="form-group form-group-full">
-                  <label htmlFor="pipeline-description">
-                    Description
-                  </label>
-
-                  <textarea
-                    id="pipeline-description"
-                    name="description"
-                    value={form.description}
-                    onChange={handleChange}
-                    placeholder="Describe what this pipeline does..."
-                    rows="4"
-                  />
-                </div>
-
-              </div>
-
-              <div className="pipeline-form-actions">
-
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => {
-                    setShowCreateForm(false);
-                    resetForm();
-                    setError("");
-                  }}
-                  disabled={creating}
-                >
-                  Cancel
-                </button>
-
-                <button
-                  type="submit"
-                  className="primary-button"
-                  disabled={creating}
-                >
-                  {creating
-                    ? "Creating..."
-                    : "Create Pipeline"}
-                </button>
-
-              </div>
-
-            </form>
-          </div>
-        )}
-
-        {/* =================================================
-            SUMMARY
-        ================================================= */}
-
-        <div className="pipeline-summary">
-
-          <div className="pipeline-summary-card">
-            <span>Total Pipelines</span>
-
-            <strong>{pipelines.length}</strong>
-
-            <small>
-              Configured pipelines
-            </small>
-          </div>
-
-          <div className="pipeline-summary-card">
-            <span>Successful</span>
-
-            <strong>{successfulCount}</strong>
-
-            <small>
-              Completed successfully
-            </small>
-          </div>
-
-          <div className="pipeline-summary-card">
-            <span>Running</span>
-
-            <strong>{runningCount}</strong>
-
-            <small>
-              Currently executing
-            </small>
-          </div>
-
-          <div className="pipeline-summary-card">
-            <span>Failed</span>
-
-            <strong>{failedCount}</strong>
-
-            <small>
-              Require attention
-            </small>
-          </div>
-
+        <div className="pipeline-summary-card">
+          <span>Total Pipelines</span>
+          <strong>
+            {statistics.total}
+          </strong>
+          <small>
+            Configured pipelines
+          </small>
         </div>
 
-        {/* =================================================
-            PIPELINES LIST
-        ================================================= */}
+        <div className="pipeline-summary-card">
+          <span>Successful</span>
+          <strong>
+            {statistics.successful}
+          </strong>
+          <small>
+            Completed successfully
+          </small>
+        </div>
 
-        <div className="content-card">
+        <div className="pipeline-summary-card">
+          <span>Running</span>
+          <strong>
+            {statistics.running}
+          </strong>
+          <small>
+            Currently executing
+          </small>
+        </div>
 
-          <div className="card-header">
-            <div>
-              <h2>CI/CD Pipelines</h2>
+        <div className="pipeline-summary-card">
+          <span>Failed</span>
+          <strong>
+            {statistics.failed}
+          </strong>
+          <small>
+            Require attention
+          </small>
+        </div>
 
-              <p>
-                Monitor pipeline executions and deployment
-                activity.
-              </p>
-            </div>
-          </div>
-
-          {/* LOADING */}
-
-          {loading && (
-            <div className="empty-state">
-              <div className="empty-state-icon">
-                ⌁
-              </div>
-
-              <h3>
-                Loading pipelines...
-              </h3>
-
-              <p>
-                Fetching pipeline information.
-              </p>
-            </div>
-          )}
-
-          {/* EMPTY */}
-
-          {!loading &&
-            !error &&
-            pipelines.length === 0 && (
-              <div className="empty-state">
-
-                <div className="empty-state-icon">
-                  ⚡
-                </div>
-
-                <h3>
-                  No pipelines yet
-                </h3>
-
-                <p>
-                  Create your first DevSecOps CI/CD
-                  pipeline to get started.
-                </p>
-
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => {
-                    setError("");
-                    setShowCreateForm(true);
-                  }}
-                >
-                  Create Pipeline
-                </button>
-
-              </div>
-            )}
-
-          {/* PIPELINE LIST */}
-
-          {!loading &&
-            !error &&
-            pipelines.length > 0 && (
-              <div className="pipeline-list">
-
-                {pipelines.map((pipeline) => (
-                  <div
-                    className="pipeline-card"
-                    key={pipeline.id}
-                  >
-
-                    <div className="pipeline-main">
-
-                      <div className="pipeline-icon">
-                        ⌁
-                      </div>
-
-                      <div>
-                        <h3>
-                          {pipeline.name ||
-                            `Pipeline #${pipeline.id}`}
-                        </h3>
-
-                        <p>
-                          {pipeline.description ||
-                            "DevSecOps CI/CD pipeline"}
-                        </p>
-                      </div>
-
-                    </div>
-
-                    <div className="pipeline-meta">
-
-                      <span
-                        className={`pipeline-status ${getStatusClass(
-                          pipeline.status
-                        )}`}
-                      >
-                        {pipeline.status ||
-                          "pending"}
-                      </span>
-
-                      <span className="pipeline-branch">
-                        {pipeline.branch ||
-                          "main"}
-                      </span>
-
-                    </div>
-
-                  </div>
-                ))}
-
-              </div>
-            )}
-
+        <div className="pipeline-summary-card">
+          <span>Pending</span>
+          <strong>
+            {statistics.pending}
+          </strong>
+          <small>
+            Waiting to run
+          </small>
         </div>
 
       </div>
-    </DashboardLayout>
+
+      {/* ====================================================
+          LAST PIPELINE RESULT
+      ==================================================== */}
+
+      {lastRunPipeline && (
+        <div
+          className="dashboard-panel"
+          style={{
+            marginTop: "24px",
+          }}
+        >
+
+          <div
+            style={{
+              display: "flex",
+              justifyContent:
+                "space-between",
+              alignItems: "center",
+              gap: "20px",
+            }}
+          >
+
+            <div>
+              <h2>
+                Latest Pipeline Result
+              </h2>
+
+              <p>
+                {lastRunPipeline.name}
+              </p>
+            </div>
+
+            <span
+              className={getStatusClass(
+                lastRunPipeline.status
+              )}
+            >
+              {lastRunPipeline.status}
+            </span>
+
+          </div>
+
+          {lastRunScan && (
+            <div className="pipeline-stats-grid">
+
+              <div className="details-card">
+                <span>
+                  Security Score
+                </span>
+
+                <strong>
+                  {lastRunScan.security_score ?? 0}%
+                </strong>
+              </div>
+
+              <div className="details-card">
+                <span>
+                  Files Scanned
+                </span>
+
+                <strong>
+                  {lastRunScan.files_scanned ?? 0}
+                </strong>
+              </div>
+
+              <div className="details-card">
+                <span>
+                  Findings
+                </span>
+
+                <strong>
+                  {lastRunScan.total_findings ??
+                    lastRunFindings.length}
+                </strong>
+              </div>
+
+              <div className="details-card">
+                <span>
+                  Scan Status
+                </span>
+
+                <strong>
+                  {lastRunScan.status}
+                </strong>
+              </div>
+
+            </div>
+          )}
+
+          {/* FINDINGS */}
+
+          {lastRunFindings.length > 0 && (
+            <div
+              style={{
+                marginTop: "24px",
+              }}
+            >
+
+              <h3>
+                Findings From This Run
+              </h3>
+
+              <div
+                className="vulnerability-list"
+                style={{
+                  marginTop: "15px",
+                }}
+              >
+
+                {lastRunFindings.map(
+                  (finding) => (
+                    <div
+                      className="vulnerability-card"
+                      key={finding.id}
+                    >
+
+                      <div className="vulnerability-header">
+
+                        <div>
+                          <span
+                            className={`severity-badge severity-${String(
+                              finding.severity ||
+                                "LOW"
+                            ).toLowerCase()}`}
+                          >
+                            {finding.severity}
+                          </span>
+
+                          <h3>
+                            {finding.title}
+                          </h3>
+                        </div>
+
+                        <span className="rule-id">
+                          {finding.rule_id}
+                        </span>
+
+                      </div>
+
+                      <p className="vulnerability-description">
+                        {finding.description}
+                      </p>
+
+                      <div className="vulnerability-details">
+
+                        <div>
+                          <span>
+                            File
+                          </span>
+
+                          <strong>
+                            {finding.file_path ||
+                              "Unknown"}
+                          </strong>
+                        </div>
+
+                        <div>
+                          <span>
+                            Line
+                          </span>
+
+                          <strong>
+                            {finding.line_number ??
+                              "—"}
+                          </strong>
+                        </div>
+
+                      </div>
+
+                      {finding.evidence && (
+                        <div className="finding-section">
+
+                          <span>
+                            Evidence
+                          </span>
+
+                          <code>
+                            {finding.evidence}
+                          </code>
+
+                        </div>
+                      )}
+
+                      {finding.recommendation && (
+                        <div className="finding-section">
+
+                          <span>
+                            Recommendation
+                          </span>
+
+                          <p>
+                            {finding.recommendation}
+                          </p>
+
+                        </div>
+                      )}
+
+                    </div>
+                  )
+                )}
+
+              </div>
+
+            </div>
+          )}
+
+          {lastRunFindings.length === 0 && (
+            <div
+              style={{
+                marginTop: "20px",
+              }}
+            >
+              ✓ No security findings were
+              detected in this pipeline run.
+            </div>
+          )}
+
+        </div>
+      )}
+
+      {/* ====================================================
+          PIPELINE LIST
+      ==================================================== */}
+
+      <div
+        className="dashboard-panel"
+        style={{
+          marginTop: "24px",
+        }}
+      >
+
+        <div
+          className="panel-header"
+          style={{
+            display: "flex",
+            justifyContent:
+              "space-between",
+            alignItems: "center",
+          }}
+        >
+
+          <div>
+            <h2>
+              Pipelines
+            </h2>
+
+            <p>
+              {pipelines.length} configured pipeline
+              {pipelines.length === 1
+                ? ""
+                : "s"}
+            </p>
+          </div>
+
+        </div>
+
+        {loading ? (
+          <div className="loading-state">
+            Loading pipelines...
+          </div>
+        ) : pipelines.length === 0 ? (
+          <div className="empty-state">
+
+            <h2>
+              No pipelines yet
+            </h2>
+
+            <p>
+              Create your first security pipeline
+              to automate repository scanning.
+            </p>
+
+            <button
+              className="primary-button"
+              onClick={() =>
+                setShowCreateForm(true)
+              }
+            >
+              + Create Pipeline
+            </button>
+
+          </div>
+        ) : (
+          <div className="pipeline-list">
+
+            {pipelines.map((pipeline) => (
+              <div
+                className="pipeline-card"
+                key={pipeline.id}
+              >
+
+                <div className="pipeline-main">
+
+                  <div className="pipeline-icon">
+                    ⚙
+                  </div>
+
+                  <div>
+
+                    <h3>
+                      {pipeline.name}
+                    </h3>
+
+                    <p>
+                      {pipeline.description ||
+                        "Security scanning pipeline"}
+                    </p>
+
+                  </div>
+
+                </div>
+
+                <div className="pipeline-meta">
+
+                  <div>
+                    <span>
+                      Repository
+                    </span>
+
+                    <strong>
+                      {pipeline.repository_url ||
+                        "Not configured"}
+                    </strong>
+                  </div>
+
+                  <div>
+                    <span>
+                      Branch
+                    </span>
+
+                    <strong>
+                      {pipeline.branch ||
+                        "main"}
+                    </strong>
+                  </div>
+
+                  <div>
+                    <span>
+                      Project
+                    </span>
+
+                    <strong>
+                      {pipeline.project_id ??
+                        "—"}
+                    </strong>
+                  </div>
+
+                  <div>
+                    <span>
+                      Last Run
+                    </span>
+
+                    <strong>
+                      {pipeline.last_run
+                        ? new Date(
+                            pipeline.last_run
+                          ).toLocaleString()
+                        : "Never"}
+                    </strong>
+                  </div>
+
+                </div>
+
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems:
+                      "center",
+                    gap: "12px",
+                    flexWrap: "wrap",
+                  }}
+                >
+
+                  <span
+                    className={getStatusClass(
+                      pipeline.status
+                    )}
+                  >
+                    {pipeline.status}
+                  </span>
+
+                  {pipeline.last_security_score !=
+                    null && (
+                    <span className="pipeline-branch">
+                      Score:{" "}
+                      {pipeline.last_security_score}%
+                    </span>
+                  )}
+
+                  {pipeline.last_files_scanned !=
+                    null && (
+                    <span className="pipeline-branch">
+                      Files:{" "}
+                      {pipeline.last_files_scanned}
+                    </span>
+                  )}
+
+                  {pipeline.last_findings !=
+                    null && (
+                    <span className="pipeline-branch">
+                      Findings:{" "}
+                      {pipeline.last_findings}
+                    </span>
+                  )}
+
+                </div>
+
+                <div
+                  style={{
+                    display: "flex",
+                    gap: "8px",
+                    marginTop: "16px",
+                  }}
+                >
+
+                  <button
+                    className="primary-button"
+                    onClick={() =>
+                      handleRunPipeline(
+                        pipeline.id
+                      )
+                    }
+                    disabled={
+                      runningId ===
+                      pipeline.id
+                    }
+                  >
+                    {runningId ===
+                    pipeline.id
+                      ? "Scanning..."
+                      : "▶ Run Security Scan"}
+                  </button>
+
+                  <button
+                    className="secondary-button"
+                    onClick={() =>
+                      handleDeletePipeline(
+                        pipeline.id
+                      )
+                    }
+                    disabled={
+                      deletingId ===
+                      pipeline.id
+                    }
+                  >
+                    {deletingId ===
+                    pipeline.id
+                      ? "Deleting..."
+                      : "Delete"}
+                  </button>
+
+                </div>
+
+              </div>
+            ))}
+
+          </div>
+        )}
+
+      </div>
+
+    </div>
   );
 }
 

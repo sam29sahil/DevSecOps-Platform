@@ -101,9 +101,7 @@ export async function startScan(scanData) {
 
 export async function getProjectScans(projectId) {
   try {
-    return await request(
-      `/projects/${projectId}/scans`
-    );
+    return await request(`/projects/${projectId}/scans`);
   } catch (error) {
     console.warn(
       "Project scan endpoint unavailable. Falling back to /scans.",
@@ -162,7 +160,10 @@ export async function createPipeline(pipelineData) {
   });
 }
 
-export async function updatePipeline(pipelineId, pipelineData) {
+export async function updatePipeline(
+  pipelineId,
+  pipelineData
+) {
   return request(`/pipelines/${pipelineId}`, {
     method: "PUT",
     body: JSON.stringify(pipelineData),
@@ -173,6 +174,15 @@ export async function deletePipeline(pipelineId) {
   return request(`/pipelines/${pipelineId}`, {
     method: "DELETE",
   });
+}
+
+export async function runPipeline(pipelineId) {
+  return request(
+    `/pipelines/${pipelineId}/run`,
+    {
+      method: "POST",
+    }
+  );
 }
 
 /* =========================================================

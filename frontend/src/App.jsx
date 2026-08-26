@@ -1,7 +1,7 @@
 import {
-  BrowserRouter,
   Routes,
   Route,
+  Navigate,
 } from "react-router-dom";
 
 import Dashboard from "./pages/Dashboard";
@@ -15,50 +15,61 @@ import Pipelines from "./pages/Pipelines";
 
 function App() {
   return (
-    <BrowserRouter>
-      <Routes>
+    <Routes>
 
-        {/* Dashboard */}
-        <Route
-          path="/dashboard"
-          element={<Dashboard />}
-        />
+      {/* Root */}
+      <Route
+        path="/"
+        element={<Navigate to="/dashboard" replace />}
+      />
 
-        {/* Projects */}
-        <Route
-          path="/projects"
-          element={<Projects />}
-        />
+      {/* Dashboard */}
+      <Route
+        path="/dashboard"
+        element={<Dashboard />}
+      />
 
-        <Route
-          path="/projects/:projectId"
-          element={<ProjectDetails />}
-        />
+      {/* Projects */}
+      <Route
+        path="/projects"
+        element={<Projects />}
+      />
 
-        {/* Scans */}
-        <Route
-          path="/scan-history"
-          element={<ScanHistory />}
-        />
+      <Route
+        path="/projects/:projectId"
+        element={<ProjectDetails />}
+      />
 
-        <Route
-          path="/scans/:scanId"
-          element={<ScanDetails />}
-        />
+      {/* Scans */}
+      <Route
+        path="/scan-history"
+        element={<ScanHistory />}
+      />
 
-        <Route
-          path="/vulnerabilities"
-          element={<Vulnerabilities />}
-        />
+      <Route
+        path="/scans/:scanId"
+        element={<ScanDetails />}
+      />
 
-        {/* Pipelines */}
-        <Route
-          path="/pipelines"
-          element={<Pipelines />}
-        />
+      {/* Vulnerabilities */}
+      <Route
+        path="/vulnerabilities"
+        element={<Vulnerabilities />}
+      />
 
-      </Routes>
-    </BrowserRouter>
+      {/* Pipelines */}
+      <Route
+        path="/pipelines"
+        element={<Pipelines />}
+      />
+
+      {/* Unknown URL */}
+      <Route
+        path="*"
+        element={<Navigate to="/dashboard" replace />}
+      />
+
+    </Routes>
   );
 }
 
