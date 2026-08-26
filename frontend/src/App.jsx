@@ -12,6 +12,7 @@ import ScanHistory from "./pages/ScanHistory";
 import ScanDetails from "./pages/ScanDetails";
 import Vulnerabilities from "./pages/Vulnerabilities";
 import Pipelines from "./pages/Pipelines";
+import Reports from "./pages/Reports";
 
 function App() {
   return (
@@ -61,6 +62,11 @@ function App() {
       <Route
         path="/pipelines"
         element={<Pipelines />}
+      />
+
+      <Route
+        path="/reports"
+        element={<Reports />}
       />
 
       {/* Unknown URL */}

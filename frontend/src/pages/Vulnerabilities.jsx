@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { getVulnerabilities } from "../services/api";
 
+
 function Vulnerabilities() {
   const [vulnerabilities, setVulnerabilities] = useState([]);
   const [loading, setLoading] = useState(true);

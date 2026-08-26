@@ -184,6 +184,13 @@ export async function runPipeline(pipelineId) {
     }
   );
 }
+/* =========================================================
+   REPORTS
+========================================================= */
+
+export async function getReport(scanId) {
+  return request(`/reports/${scanId}`);
+}
 
 /* =========================================================
    HEALTH

@@ -1,18 +1,20 @@
-import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
 
 import DashboardLayout from "../layouts/DashboardLayout";
-
 import {
   getProjects,
   getScans,
   getVulnerabilities,
   getPipelines,
 } from "../services/api";
+
 import "./Dashboard.css";
 
 
 function Dashboard() {
+  const navigate = useNavigate();
+
   const [projects, setProjects] = useState([]);
   const [scans, setScans] = useState([]);
   const [vulnerabilities, setVulnerabilities] = useState([]);
@@ -23,390 +25,191 @@ function Dashboard() {
   const [error, setError] = useState("");
 
   /*
-  =========================================================
+  ============================================================
   LOAD DASHBOARD DATA
-  =========================================================
+  ============================================================
   */
 
-  async function loadDashboard(showLoader = true) {
+  const loadDashboard = useCallback(async (isRefresh = false) => {
     try {
-      if (showLoader) {
-        setLoading(true);
-      } else {
+      if (isRefresh) {
         setRefreshing(true);
+      } else {
+        setLoading(true);
       }
 
       setError("");
 
-      const results = await Promise.allSettled([
+      const [
+        projectsResponse,
+        scansResponse,
+        vulnerabilitiesResponse,
+        pipelinesResponse,
+      ] = await Promise.all([
         getProjects(),
         getScans(),
         getVulnerabilities(),
         getPipelines(),
       ]);
 
-      const [
-        projectsResult,
-        scansResult,
-        vulnerabilitiesResult,
-        pipelinesResult,
-      ] = results;
-
-      /*
-      -------------------------------------------------------
-      PROJECTS
-      -------------------------------------------------------
-      */
-
-      if (projectsResult.status === "fulfilled") {
-        const data = projectsResult.value;
-
-        setProjects(
-          Array.isArray(data?.projects)
-            ? data.projects
-            : []
-        );
-      } else {
-        setProjects([]);
-      }
-
-      /*
-      -------------------------------------------------------
-      SCANS
-      -------------------------------------------------------
-      */
-
-      if (scansResult.status === "fulfilled") {
-        const data = scansResult.value;
-
-        setScans(
-          Array.isArray(data?.scans)
-            ? data.scans
-            : []
-        );
-      } else {
-        setScans([]);
-      }
-
-      /*
-      -------------------------------------------------------
-      VULNERABILITIES
-      -------------------------------------------------------
-      */
-
-      if (vulnerabilitiesResult.status === "fulfilled") {
-        const data = vulnerabilitiesResult.value;
-
-        setVulnerabilities(
-          Array.isArray(data?.vulnerabilities)
-            ? data.vulnerabilities
-            : Array.isArray(data?.findings)
-            ? data.findings
-            : []
-        );
-      } else {
-        setVulnerabilities([]);
-      }
-
-      /*
-      -------------------------------------------------------
-      PIPELINES
-      -------------------------------------------------------
-      */
-
-      if (pipelinesResult.status === "fulfilled") {
-        const data = pipelinesResult.value;
-
-        setPipelines(
-          Array.isArray(data?.pipelines)
-            ? data.pipelines
-            : []
-        );
-      } else {
-        setPipelines([]);
-      }
-
-      /*
-      -------------------------------------------------------
-      PARTIAL FAILURE HANDLING
-      -------------------------------------------------------
-      */
-
-      const failedRequests = results.filter(
-        (result) => result.status === "rejected"
+      setProjects(
+        Array.isArray(projectsResponse?.projects)
+          ? projectsResponse.projects
+          : []
       );
 
-      if (failedRequests.length === results.length) {
-        setError(
-          "Unable to load dashboard data. Check that the Flask API is running."
-        );
-      }
+      setScans(
+        Array.isArray(scansResponse?.scans)
+          ? scansResponse.scans
+          : []
+      );
+
+      setVulnerabilities(
+        Array.isArray(vulnerabilitiesResponse?.vulnerabilities)
+          ? vulnerabilitiesResponse.vulnerabilities
+          : []
+      );
+
+      setPipelines(
+        Array.isArray(pipelinesResponse?.pipelines)
+          ? pipelinesResponse.pipelines
+          : []
+      );
     } catch (err) {
       console.error("Dashboard loading error:", err);
 
       setError(
         err?.message ||
-          "Failed to load dashboard data."
+          "Unable to load dashboard data."
       );
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }
-
-
-  /*
-  =========================================================
-  INITIAL LOAD
-  =========================================================
-  */
-
-  useEffect(() => {
-    loadDashboard(true);
   }, []);
 
+  useEffect(() => {
+    loadDashboard();
+  }, [loadDashboard]);
+
 
   /*
-  =========================================================
-  CALCULATED DASHBOARD VALUES
-  =========================================================
+  ============================================================
+  DASHBOARD CALCULATIONS
+  ============================================================
   */
 
   const completedScans = useMemo(() => {
     return scans.filter(
       (scan) =>
-        String(scan?.status || "").toLowerCase() ===
-        "completed"
+        String(scan.status).toLowerCase() === "completed"
     );
   }, [scans]);
 
 
-  const runningScans = useMemo(() => {
-    return scans.filter((scan) => {
+  const activePipelines = useMemo(() => {
+    return pipelines.filter((pipeline) => {
       const status = String(
-        scan?.status || ""
+        pipeline.status || ""
       ).toLowerCase();
 
       return (
         status === "running" ||
-        status === "pending"
+        status === "pending" ||
+        status === "queued"
       );
     });
-  }, [scans]);
-
-
-  const failedScans = useMemo(() => {
-    return scans.filter(
-      (scan) =>
-        String(scan?.status || "").toLowerCase() ===
-        "failed"
-    );
-  }, [scans]);
-
-
-  /*
-  ---------------------------------------------------------
-  LATEST SCAN
-  ---------------------------------------------------------
-  */
-
-  const latestScan = useMemo(() => {
-    if (!scans.length) {
-      return null;
-    }
-
-    return [...scans].sort((a, b) => {
-      const dateA = new Date(
-        a?.completed_at ||
-          a?.created_at ||
-          a?.started_at ||
-          0
-      ).getTime();
-
-      const dateB = new Date(
-        b?.completed_at ||
-          b?.created_at ||
-          b?.started_at ||
-          0
-      ).getTime();
-
-      return dateB - dateA;
-    })[0];
-  }, [scans]);
-
-
-  /*
-  ---------------------------------------------------------
-  SECURITY SCORE
-  ---------------------------------------------------------
-  */
-
-  const securityScore = useMemo(() => {
-    if (!latestScan) {
-      return 100;
-    }
-
-    const score = Number(
-      latestScan.security_score
-    );
-
-    if (Number.isNaN(score)) {
-      return 100;
-    }
-
-    return Math.max(
-      0,
-      Math.min(100, score)
-    );
-  }, [latestScan]);
-
-
-  /*
-  ---------------------------------------------------------
-  PIPELINE STATUS
-  ---------------------------------------------------------
-  */
-
-  const pipelineStats = useMemo(() => {
-    let successful = 0;
-    let running = 0;
-    let failed = 0;
-
-    pipelines.forEach((pipeline) => {
-      const status = String(
-        pipeline?.status || ""
-      ).toLowerCase();
-
-      if (
-        status === "success" ||
-        status === "successful" ||
-        status === "completed"
-      ) {
-        successful++;
-      } else if (
-        status === "running"
-      ) {
-        running++;
-      } else if (
-        status === "failed" ||
-        status === "failure" ||
-        status === "error"
-      ) {
-        failed++;
-      }
-    });
-
-    return {
-      total: pipelines.length,
-      successful,
-      running,
-      failed,
-    };
   }, [pipelines]);
 
 
-  /*
-  ---------------------------------------------------------
-  VULNERABILITY SEVERITIES
-  ---------------------------------------------------------
-  */
-
-  const severityStats = useMemo(() => {
-    const stats = {
-      critical: 0,
-      high: 0,
-      medium: 0,
-      low: 0,
-    };
-
-    vulnerabilities.forEach((item) => {
-      const severity = String(
-        item?.severity || "LOW"
+  const successfulPipelines = useMemo(() => {
+    return pipelines.filter((pipeline) => {
+      const status = String(
+        pipeline.status || ""
       ).toLowerCase();
 
-      if (severity === "critical") {
-        stats.critical++;
-      } else if (severity === "high") {
-        stats.high++;
-      } else if (severity === "medium") {
-        stats.medium++;
-      } else {
-        stats.low++;
-      }
+      return (
+        status === "success" ||
+        status === "successful" ||
+        status === "completed"
+      );
     });
+  }, [pipelines]);
 
-    return stats;
+
+  const securityScore = useMemo(() => {
+    if (!completedScans.length) {
+      return 100;
+    }
+
+    const scores = completedScans
+      .map((scan) => Number(scan.security_score))
+      .filter((score) => !Number.isNaN(score));
+
+    if (!scores.length) {
+      return 100;
+    }
+
+    const total = scores.reduce(
+      (sum, score) => sum + score,
+      0
+    );
+
+    return Math.round(total / scores.length);
+  }, [completedScans]);
+
+
+  const criticalCount = useMemo(() => {
+    return vulnerabilities.filter(
+      (item) =>
+        String(item.severity).toLowerCase() ===
+        "critical"
+    ).length;
+  }, [vulnerabilities]);
+
+
+  const highCount = useMemo(() => {
+    return vulnerabilities.filter(
+      (item) =>
+        String(item.severity).toLowerCase() ===
+        "high"
+    ).length;
+  }, [vulnerabilities]);
+
+
+  const mediumCount = useMemo(() => {
+    return vulnerabilities.filter(
+      (item) =>
+        String(item.severity).toLowerCase() ===
+        "medium"
+    ).length;
+  }, [vulnerabilities]);
+
+
+  const lowCount = useMemo(() => {
+    return vulnerabilities.filter(
+      (item) =>
+        String(item.severity).toLowerCase() ===
+        "low"
+    ).length;
   }, [vulnerabilities]);
 
 
   /*
-  ---------------------------------------------------------
-  SECURITY STATUS
-  ---------------------------------------------------------
-  */
-
-  const securityStatus = useMemo(() => {
-    if (
-      severityStats.critical > 0
-    ) {
-      return {
-        label: "Critical Risk",
-        description:
-          "Critical security vulnerabilities require immediate attention.",
-        className: "critical",
-      };
-    }
-
-    if (
-      severityStats.high > 0
-    ) {
-      return {
-        label: "High Risk",
-        description:
-          "High-severity vulnerabilities require attention.",
-        className: "high",
-      };
-    }
-
-    if (
-      severityStats.medium > 0
-    ) {
-      return {
-        label: "Attention Required",
-        description:
-          "Medium-severity security findings were detected.",
-        className: "medium",
-      };
-    }
-
-    return {
-      label: "System Secure",
-      description:
-        "No active high-risk security issues detected.",
-      className: "secure",
-    };
-  }, [severityStats]);
-
-
-  /*
-  ---------------------------------------------------------
+  ============================================================
   RECENT SCANS
-  ---------------------------------------------------------
+  ============================================================
   */
 
   const recentScans = useMemo(() => {
     return [...scans]
       .sort((a, b) => {
         const dateA = new Date(
-          a?.created_at ||
-            a?.started_at ||
-            0
+          a.created_at || a.started_at || 0
         ).getTime();
 
         const dateB = new Date(
-          b?.created_at ||
-            b?.started_at ||
-            0
+          b.created_at || b.started_at || 0
         ).getTime();
 
         return dateB - dateA;
@@ -416,25 +219,25 @@ function Dashboard() {
 
 
   /*
-  ---------------------------------------------------------
+  ============================================================
   RECENT PIPELINES
-  ---------------------------------------------------------
+  ============================================================
   */
 
   const recentPipelines = useMemo(() => {
     return [...pipelines]
       .sort((a, b) => {
         const dateA = new Date(
-          a?.updated_at ||
-            a?.last_run ||
-            a?.created_at ||
+          a.created_at ||
+            a.updated_at ||
+            a.started_at ||
             0
         ).getTime();
 
         const dateB = new Date(
-          b?.updated_at ||
-            b?.last_run ||
-            b?.created_at ||
+          b.created_at ||
+            b.updated_at ||
+            b.started_at ||
             0
         ).getTime();
 
@@ -445,89 +248,101 @@ function Dashboard() {
 
 
   /*
-  =========================================================
+  ============================================================
   HELPERS
-  =========================================================
+  ============================================================
   */
 
-  function formatDate(value) {
-    if (!value) {
+  function formatDate(date) {
+    if (!date) {
       return "—";
     }
 
-    const date = new Date(value);
+    const parsed = new Date(date);
 
-    if (Number.isNaN(date.getTime())) {
+    if (Number.isNaN(parsed.getTime())) {
       return "—";
     }
 
-    return date.toLocaleString();
+    return parsed.toLocaleString();
   }
 
 
-  function statusClass(status) {
-    const normalized = String(
+  function getPipelineStatusClass(status) {
+    const value = String(
       status || "unknown"
     ).toLowerCase();
 
     if (
-      normalized === "completed" ||
-      normalized === "success" ||
-      normalized === "successful"
+      value === "success" ||
+      value === "successful" ||
+      value === "completed"
     ) {
-      return "status-completed";
+      return "status-success";
     }
 
     if (
-      normalized === "running"
+      value === "failed" ||
+      value === "failure" ||
+      value === "error"
     ) {
-      return "status-running";
+      return "status-danger";
     }
 
     if (
-      normalized === "failed" ||
-      normalized === "failure" ||
-      normalized === "error"
+      value === "running" ||
+      value === "pending" ||
+      value === "queued"
     ) {
-      return "status-failed";
+      return "status-warning";
     }
 
-    return "status-pending";
+    return "status-neutral";
   }
 
 
-  function severityClass(severity) {
+  function getSeverityClass(severity) {
     return `severity-${String(
-      severity || "LOW"
+      severity || "low"
     ).toLowerCase()}`;
   }
 
 
+  function getScoreClass(score) {
+    if (score >= 90) {
+      return "score-good";
+    }
+
+    if (score >= 70) {
+      return "score-warning";
+    }
+
+    return "score-danger";
+  }
+
+
   /*
-  =========================================================
-  LOADING
-  =========================================================
+  ============================================================
+  LOADING STATE
+  ============================================================
   */
 
   if (loading) {
     return (
       <DashboardLayout>
         <div className="dashboard-page">
+          <div className="dashboard-loading">
+            <div className="loading-spinner"></div>
 
-          <div className="dashboard-header">
-            <div>
-              <h1>Security Dashboard</h1>
+            <h2>
+              Loading security dashboard
+            </h2>
 
-              <p>
-                Loading your DevSecOps security posture...
-              </p>
-            </div>
+            <p>
+              Gathering projects, scans,
+              vulnerabilities and pipelines...
+            </p>
           </div>
-
-          <div className="loading-state">
-            Loading dashboard...
-          </div>
-
         </div>
       </DashboardLayout>
     );
@@ -535,24 +350,24 @@ function Dashboard() {
 
 
   /*
-  =========================================================
-  RENDER
-  =========================================================
+  ============================================================
+  MAIN DASHBOARD
+  ============================================================
   */
 
   return (
     <DashboardLayout>
-
       <div className="dashboard-page">
 
         {/* =================================================
             HEADER
         ================================================= */}
 
-        <div className="dashboard-header">
+        <section className="dashboard-hero">
 
-          <div>
-            <div className="page-eyebrow">
+          <div className="dashboard-hero-content">
+
+            <div className="dashboard-eyebrow">
               DEVSECOPS OVERVIEW
             </div>
 
@@ -562,35 +377,42 @@ function Dashboard() {
 
             <p>
               Monitor your projects, security scans,
-              vulnerabilities and CI/CD pipelines.
+              vulnerabilities and CI/CD pipelines
+              from one place.
             </p>
+
           </div>
+
 
           <div className="dashboard-actions">
 
             <button
               type="button"
-              className="secondary-button"
-              onClick={() =>
-                loadDashboard(false)
-              }
+              className="dashboard-refresh-button"
+              onClick={() => loadDashboard(true)}
               disabled={refreshing}
             >
+              <span className={refreshing ? "spin" : ""}>
+                ↻
+              </span>
+
               {refreshing
                 ? "Refreshing..."
-                : "↻ Refresh"}
+                : "Refresh"}
             </button>
 
-            <Link
-              to="/scan-history"
-              className="scan-button"
+
+            <button
+              type="button"
+              className="dashboard-primary-button"
+              onClick={() => navigate("/projects")}
             >
               + New Security Scan
-            </Link>
+            </button>
 
           </div>
 
-        </div>
+        </section>
 
 
         {/* =================================================
@@ -598,61 +420,88 @@ function Dashboard() {
         ================================================= */}
 
         {error && (
-          <div className="error-message">
-            <strong>
-              Dashboard warning
-            </strong>
+          <div className="dashboard-alert">
 
-            <span>
-              {error}
-            </span>
+            <div className="dashboard-alert-icon">
+              !
+            </div>
+
+            <div>
+              <strong>
+                Dashboard data could not be fully loaded
+              </strong>
+
+              <p>
+                {error}
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => loadDashboard(true)}
+            >
+              Retry
+            </button>
+
           </div>
         )}
 
 
         {/* =================================================
-            MAIN STATS
+            STAT CARDS
         ================================================= */}
 
-        <div className="stats-grid">
+        <section className="dashboard-stats">
 
           {/* PROJECTS */}
 
           <Link
             to="/projects"
-            className="stat-card stat-card-link"
+            className="dashboard-stat-card"
           >
-            <span>
-              Projects
-            </span>
+            <div className="stat-card-top">
+              <span className="stat-label">
+                Projects
+              </span>
 
-            <strong>
+              <span className="stat-icon stat-icon-blue">
+                ◇
+              </span>
+            </div>
+
+            <strong className="stat-value">
               {projects.length}
             </strong>
 
-            <small>
+            <span className="stat-description">
               Active projects
-            </small>
+            </span>
           </Link>
 
 
           {/* SCANS */}
 
           <Link
-            to="/scan-history"
-            className="stat-card stat-card-link"
+            to="/security-scans"
+            className="dashboard-stat-card"
           >
-            <span>
-              Security Scans
-            </span>
+            <div className="stat-card-top">
+              <span className="stat-label">
+                Security Scans
+              </span>
 
-            <strong>
+              <span className="stat-icon stat-icon-purple">
+                ⌁
+              </span>
+            </div>
+
+            <strong className="stat-value">
               {completedScans.length}
             </strong>
 
-            <small>
+            <span className="stat-description">
               Completed assessments
-            </small>
+            </span>
           </Link>
 
 
@@ -660,316 +509,437 @@ function Dashboard() {
 
           <Link
             to="/vulnerabilities"
-            className="stat-card stat-card-link"
+            className="dashboard-stat-card"
           >
-            <span>
-              Vulnerabilities
-            </span>
+            <div className="stat-card-top">
+              <span className="stat-label">
+                Vulnerabilities
+              </span>
 
-            <strong>
+              <span className="stat-icon stat-icon-red">
+                !
+              </span>
+            </div>
+
+            <strong className="stat-value">
               {vulnerabilities.length}
             </strong>
 
-            <small>
+            <span className="stat-description">
               Security findings
-            </small>
+            </span>
+
+            <div className="stat-severity-row">
+
+              <span className="mini-critical">
+                {criticalCount} critical
+              </span>
+
+              <span className="mini-high">
+                {highCount} high
+              </span>
+
+            </div>
           </Link>
 
 
-          {/* SECURITY SCORE */}
+          {/* SCORE */}
 
-          <div className="stat-card">
+          <div className="dashboard-stat-card score-card">
 
-            <span>
-              Security Score
-            </span>
+            <div className="stat-card-top">
+              <span className="stat-label">
+                Security Score
+              </span>
 
-            <strong className="security-score">
-              {securityScore}%
-            </strong>
+              <span className="stat-icon stat-icon-green">
+                ✓
+              </span>
+            </div>
 
-            <small>
+            <div className="score-display">
+
+              <strong
+                className={`stat-value ${getScoreClass(
+                  securityScore
+                )}`}
+              >
+                {securityScore}%
+              </strong>
+
+              <div className="score-bar">
+                <div
+                  className={`score-bar-fill ${getScoreClass(
+                    securityScore
+                  )}`}
+                  style={{
+                    width: `${Math.min(
+                      100,
+                      Math.max(0, securityScore)
+                    )}%`,
+                  }}
+                />
+              </div>
+
+            </div>
+
+            <span className="stat-description">
               Current security posture
-            </small>
+            </span>
 
           </div>
 
-        </div>
+        </section>
 
 
         {/* =================================================
-            SECONDARY METRICS
+            MAIN GRID
         ================================================= */}
 
-        <div className="dashboard-grid">
+        <section className="dashboard-main-grid">
 
-          {/* SECURITY STATUS */}
+          {/* =================================================
+              SECURITY STATUS
+          ================================================= */}
 
-          <div className="dashboard-panel">
+          <div className="dashboard-panel security-panel">
 
             <div className="panel-header">
 
               <div>
+                <span className="panel-eyebrow">
+                  SECURITY HEALTH
+                </span>
+
                 <h2>
                   Security Status
                 </h2>
 
                 <p>
-                  Current security health
+                  Current security health across
+                  your platform.
                 </p>
               </div>
 
-              <Link
-                to="/vulnerabilities"
-                className="panel-link"
+              <span
+                className={
+                  vulnerabilities.length === 0
+                    ? "health-badge health-secure"
+                    : "health-badge health-warning"
+                }
               >
-                View findings →
+                <span className="health-dot"></span>
+
+                {vulnerabilities.length === 0
+                  ? "Secure"
+                  : "Attention Required"}
+              </span>
+
+            </div>
+
+
+            <div className="security-overview">
+
+              <div className="security-score-large">
+
+                <div
+                  className={`score-circle ${getScoreClass(
+                    securityScore
+                  )}`}
+                >
+                  <strong>
+                    {securityScore}
+                  </strong>
+
+                  <span>
+                    / 100
+                  </span>
+                </div>
+
+                <div>
+                  <strong>
+                    Overall Security Score
+                  </strong>
+
+                  <p>
+                    Based on completed security
+                    assessments.
+                  </p>
+                </div>
+
+              </div>
+
+
+              <div className="severity-breakdown">
+
+                <div className="severity-row">
+                  <span>
+                    <i className="severity-dot critical"></i>
+                    Critical
+                  </span>
+
+                  <strong>
+                    {criticalCount}
+                  </strong>
+                </div>
+
+                <div className="severity-row">
+                  <span>
+                    <i className="severity-dot high"></i>
+                    High
+                  </span>
+
+                  <strong>
+                    {highCount}
+                  </strong>
+                </div>
+
+                <div className="severity-row">
+                  <span>
+                    <i className="severity-dot medium"></i>
+                    Medium
+                  </span>
+
+                  <strong>
+                    {mediumCount}
+                  </strong>
+                </div>
+
+                <div className="severity-row">
+                  <span>
+                    <i className="severity-dot low"></i>
+                    Low
+                  </span>
+
+                  <strong>
+                    {lowCount}
+                  </strong>
+                </div>
+
+              </div>
+
+            </div>
+
+
+            <div className="panel-footer">
+
+              <Link to="/vulnerabilities">
+                View all findings →
               </Link>
-
-            </div>
-
-
-            <div
-              className={`security-status security-status-${securityStatus.className}`}
-            >
-
-              <div className="status-indicator"></div>
-
-              <div>
-
-                <strong>
-                  {securityStatus.label}
-                </strong>
-
-                <p>
-                  {securityStatus.description}
-                </p>
-
-              </div>
-
-            </div>
-
-
-            <div className="severity-overview">
-
-              <div>
-                <span className="severity-dot critical"></span>
-                <span>Critical</span>
-                <strong>
-                  {severityStats.critical}
-                </strong>
-              </div>
-
-              <div>
-                <span className="severity-dot high"></span>
-                <span>High</span>
-                <strong>
-                  {severityStats.high}
-                </strong>
-              </div>
-
-              <div>
-                <span className="severity-dot medium"></span>
-                <span>Medium</span>
-                <strong>
-                  {severityStats.medium}
-                </strong>
-              </div>
-
-              <div>
-                <span className="severity-dot low"></span>
-                <span>Low</span>
-                <strong>
-                  {severityStats.low}
-                </strong>
-              </div>
 
             </div>
 
           </div>
 
 
-          {/* PIPELINE STATUS */}
+          {/* =================================================
+              PIPELINE STATUS
+          ================================================= */}
 
-          <div className="dashboard-panel">
+          <div className="dashboard-panel pipeline-panel">
 
             <div className="panel-header">
 
               <div>
+                <span className="panel-eyebrow">
+                  CI/CD
+                </span>
+
                 <h2>
                   Pipeline Status
                 </h2>
 
                 <p>
-                  CI/CD security pipeline overview
+                  Current CI/CD pipeline overview.
                 </p>
               </div>
 
-              <Link
-                to="/pipelines"
-                className="panel-link"
-              >
-                Manage →
-              </Link>
+              <span className="pipeline-count">
+                {pipelines.length}
+              </span>
 
             </div>
 
 
-            <div className="pipeline-dashboard-stats">
+            <div className="pipeline-summary">
 
               <div>
-                <span>
-                  Total
-                </span>
-
                 <strong>
-                  {pipelineStats.total}
+                  {successfulPipelines.length}
                 </strong>
-              </div>
 
-              <div>
                 <span>
                   Successful
                 </span>
-
-                <strong>
-                  {pipelineStats.successful}
-                </strong>
               </div>
 
               <div>
-                <span>
-                  Running
-                </span>
-
                 <strong>
-                  {pipelineStats.running}
+                  {activePipelines.length}
                 </strong>
-              </div>
 
-              <div>
                 <span>
-                  Failed
+                  Active
                 </span>
-
-                <strong>
-                  {pipelineStats.failed}
-                </strong>
               </div>
 
             </div>
 
-          </div>
 
-        </div>
+            <div className="panel-footer">
 
-
-        {/* =================================================
-            RECENT SCANS + RECENT PIPELINES
-        ================================================= */}
-
-        <div className="dashboard-grid">
-
-          {/* RECENT SCANS */}
-
-          <div className="dashboard-panel">
-
-            <div className="panel-header">
-
-              <div>
-                <h2>
-                  Recent Security Scans
-                </h2>
-
-                <p>
-                  Latest security assessments
-                </p>
-              </div>
-
-              <Link
-                to="/scan-history"
-                className="panel-link"
-              >
-                View all →
+              <Link to="/pipelines">
+                Manage pipelines →
               </Link>
 
             </div>
 
+          </div>
 
-            {recentScans.length === 0 ? (
-
-              <div className="empty-state">
-
-                <div className="empty-icon">
-                  ◇
-                </div>
-
-                <h3>
-                  No scans yet
-                </h3>
-
-                <p>
-                  Run a security scan to see results here.
-                </p>
-
-              </div>
-
-            ) : (
-
-              <div className="dashboard-list">
-
-                {recentScans.map((scan) => (
-
-                  <Link
-                    key={scan.id}
-                    to={`/scans/${scan.id}`}
-                    className="dashboard-list-item"
-                  >
-
-                    <div className="dashboard-list-main">
-
-                      <strong>
-                        Scan #{scan.id}
-                      </strong>
-
-                      <span>
-                        {scan.project_name ||
-                          `Project #${scan.project_id}`}
-                      </span>
-
-                    </div>
+        </section>
 
 
-                    <div className="dashboard-list-meta">
+        {/* =================================================
+            RECENT SCANS
+        ================================================= */}
 
-                      <span
-                        className={`status-badge ${statusClass(
-                          scan.status
-                        )}`}
-                      >
-                        {scan.status || "unknown"}
-                      </span>
+        <section className="dashboard-panel recent-panel">
 
-                      <strong>
-                        {scan.security_score ?? 0}%
-                      </strong>
+          <div className="panel-header">
 
-                      <small>
-                        {scan.total_findings ?? 0} findings
-                      </small>
+            <div>
+              <span className="panel-eyebrow">
+                SECURITY ACTIVITY
+              </span>
 
-                    </div>
+              <h2>
+                Recent Security Scans
+              </h2>
 
-                  </Link>
+              <p>
+                Latest security assessments performed
+                on your projects.
+              </p>
+            </div>
 
-                ))}
-
-              </div>
-
-            )}
+            <Link
+              to="/security-scans"
+              className="panel-action"
+            >
+              View all →
+            </Link>
 
           </div>
 
+
+          {recentScans.length === 0 ? (
+            <div className="dashboard-empty">
+
+              <div className="empty-icon">
+                ⌁
+              </div>
+
+              <h3>
+                No security scans yet
+              </h3>
+
+              <p>
+                Run your first security scan to
+                start monitoring your security posture.
+              </p>
+
+            </div>
+          ) : (
+            <div className="scan-table">
+
+              <div className="scan-table-header">
+                <span>Project</span>
+                <span>Status</span>
+                <span>Findings</span>
+                <span>Score</span>
+                <span>Date</span>
+              </div>
+
+
+              {recentScans.map((scan) => (
+
+                <Link
+                  key={scan.id}
+                  to={`/scans/${scan.id}`}
+                  className="scan-table-row"
+                >
+
+                  <div className="scan-project">
+
+                    <div className="scan-project-icon">
+                      ◇
+                    </div>
+
+                    <div>
+                      <strong>
+                        {scan.project_name ||
+                          `Project #${scan.project_id}`}
+                      </strong>
+
+                      <span>
+                        Scan #{scan.id}
+                      </span>
+                    </div>
+
+                  </div>
+
+
+                  <div>
+                    <span
+                      className={`table-status ${getPipelineStatusClass(
+                        scan.status
+                      )}`}
+                    >
+                      {scan.status || "unknown"}
+                    </span>
+                  </div>
+
+
+                  <div>
+                    <strong>
+                      {scan.total_findings ?? 0}
+                    </strong>
+                  </div>
+
+
+                  <div>
+                    <strong
+                      className={getScoreClass(
+                        Number(scan.security_score ?? 0)
+                      )}
+                    >
+                      {scan.security_score ?? 0}%
+                    </strong>
+                  </div>
+
+
+                  <div className="scan-date">
+                    {formatDate(
+                      scan.completed_at ||
+                        scan.created_at
+                    )}
+                  </div>
+
+                </Link>
+
+              ))}
+
+            </div>
+          )}
+
+        </section>
+
+
+        {/* =================================================
+            RECENT PIPELINES + QUICK ACTIONS
+        ================================================= */}
+
+        <section className="dashboard-bottom-grid">
 
           {/* RECENT PIPELINES */}
 
@@ -978,18 +948,18 @@ function Dashboard() {
             <div className="panel-header">
 
               <div>
+                <span className="panel-eyebrow">
+                  PIPELINE ACTIVITY
+                </span>
+
                 <h2>
                   Recent Pipelines
                 </h2>
-
-                <p>
-                  Latest CI/CD activity
-                </p>
               </div>
 
               <Link
                 to="/pipelines"
-                className="panel-link"
+                className="panel-action"
               >
                 View all →
               </Link>
@@ -998,8 +968,7 @@ function Dashboard() {
 
 
             {recentPipelines.length === 0 ? (
-
-              <div className="empty-state">
+              <div className="dashboard-empty small">
 
                 <div className="empty-icon">
                   ⚡
@@ -1010,277 +979,165 @@ function Dashboard() {
                 </h3>
 
                 <p>
-                  Connect a repository to start your first
-                  DevSecOps pipeline.
+                  Create a pipeline to start
+                  automating security checks.
                 </p>
 
-                <Link
-                  to="/pipelines"
-                  className="primary-button"
-                >
-                  Create Pipeline
-                </Link>
-
               </div>
-
             ) : (
+              <div className="pipeline-list">
 
-              <div className="dashboard-list">
+                {recentPipelines.map((pipeline) => (
 
-                {recentPipelines.map(
-                  (pipeline) => (
+                  <Link
+                    key={pipeline.id}
+                    to={`/pipelines/${pipeline.id}`}
+                    className="pipeline-item"
+                  >
 
-                    <div
-                      key={pipeline.id}
-                      className="dashboard-list-item"
-                    >
+                    <div className="pipeline-icon">
+                      ⚡
+                    </div>
 
-                      <div className="dashboard-list-main">
+                    <div className="pipeline-info">
 
-                        <strong>
-                          {pipeline.name ||
-                            `Pipeline #${pipeline.id}`}
-                        </strong>
+                      <strong>
+                        {pipeline.name ||
+                          `Pipeline #${pipeline.id}`}
+                      </strong>
 
-                        <span>
-                          {pipeline.project_name ||
-                            `Project #${pipeline.project_id}`}
-                        </span>
-
-                      </div>
-
-
-                      <div className="dashboard-list-meta">
-
-                        <span
-                          className={`status-badge ${statusClass(
-                            pipeline.status
-                          )}`}
-                        >
-                          {pipeline.status ||
-                            "unknown"}
-                        </span>
-
-                        <small>
-                          {formatDate(
-                            pipeline.updated_at ||
-                              pipeline.last_run ||
-                              pipeline.created_at
-                          )}
-                        </small>
-
-                      </div>
+                      <span>
+                        {pipeline.project_name ||
+                          "Project"}
+                      </span>
 
                     </div>
 
-                  )
-                )}
+                    <span
+                      className={`table-status ${getPipelineStatusClass(
+                        pipeline.status
+                      )}`}
+                    >
+                      {pipeline.status ||
+                        "unknown"}
+                    </span>
+
+                  </Link>
+
+                ))}
 
               </div>
-
-            )}
-
-          </div>
-
-        </div>
-
-
-        {/* =================================================
-            LATEST SCAN
-        ================================================= */}
-
-        <div className="dashboard-panel latest-scan-panel">
-
-          <div className="panel-header">
-
-            <div>
-              <h2>
-                Latest Security Assessment
-              </h2>
-
-              <p>
-                Most recent completed security scan
-              </p>
-            </div>
-
-            {latestScan && (
-              <Link
-                to={`/scans/${latestScan.id}`}
-                className="panel-link"
-              >
-                Open scan →
-              </Link>
             )}
 
           </div>
 
 
-          {!latestScan ? (
+          {/* QUICK ACTIONS */}
 
-            <div className="empty-state">
+          <div className="dashboard-panel">
 
-              <div className="empty-icon">
-                ✓
-              </div>
+            <div className="panel-header">
 
-              <h3>
-                No security assessment available
-              </h3>
-
-              <p>
-                Run your first scan to establish your
-                security baseline.
-              </p>
-
-            </div>
-
-          ) : (
-
-            <div className="latest-scan-content">
-
-              <div className="latest-scan-score">
-
-                <span>
-                  Security Score
+              <div>
+                <span className="panel-eyebrow">
+                  MANAGEMENT
                 </span>
 
-                <strong>
-                  {securityScore}%
-                </strong>
+                <h2>
+                  Quick Actions
+                </h2>
 
-              </div>
-
-
-              <div className="latest-scan-details">
-
-                <div>
-                  <span>
-                    Scan
-                  </span>
-
-                  <strong>
-                    #{latestScan.id}
-                  </strong>
-                </div>
-
-                <div>
-                  <span>
-                    Project
-                  </span>
-
-                  <strong>
-                    {latestScan.project_name ||
-                      `Project #${latestScan.project_id}`}
-                  </strong>
-                </div>
-
-                <div>
-                  <span>
-                    Files Scanned
-                  </span>
-
-                  <strong>
-                    {latestScan.files_scanned ?? 0}
-                  </strong>
-                </div>
-
-                <div>
-                  <span>
-                    Findings
-                  </span>
-
-                  <strong>
-                    {latestScan.total_findings ?? 0}
-                  </strong>
-                </div>
-
-                <div>
-                  <span>
-                    Status
-                  </span>
-
-                  <strong
-                    className={`text-status ${statusClass(
-                      latestScan.status
-                    )}`}
-                  >
-                    {latestScan.status}
-                  </strong>
-                </div>
-
-                <div>
-                  <span>
-                    Completed
-                  </span>
-
-                  <strong>
-                    {formatDate(
-                      latestScan.completed_at
-                    )}
-                  </strong>
-                </div>
-
+                <p>
+                  Common platform operations.
+                </p>
               </div>
 
             </div>
 
-          )}
 
-        </div>
+            <div className="quick-actions">
+
+              <Link
+                to="/projects"
+                className="quick-action"
+              >
+                <span className="quick-action-icon">
+                  ◇
+                </span>
+
+                <span>
+                  <strong>
+                    Manage Projects
+                  </strong>
+
+                  <small>
+                    View and configure projects
+                  </small>
+                </span>
+
+                <b>
+                  →
+                </b>
+              </Link>
 
 
-        {/* =================================================
-            SYSTEM SUMMARY
-        ================================================= */}
+              <Link
+                to="/pipelines"
+                className="quick-action"
+              >
+                <span className="quick-action-icon">
+                  ⚡
+                </span>
 
-        <div className="dashboard-footer-summary">
+                <span>
+                  <strong>
+                    Manage Pipelines
+                  </strong>
 
-          <div>
-            <span>
-              Completed scans
-            </span>
+                  <small>
+                    Configure CI/CD pipelines
+                  </small>
+                </span>
 
-            <strong>
-              {completedScans.length}
-            </strong>
+                <b>
+                  →
+                </b>
+              </Link>
+
+
+              <Link
+                to="/vulnerabilities"
+                className="quick-action"
+              >
+                <span className="quick-action-icon danger">
+                  !
+                </span>
+
+                <span>
+                  <strong>
+                    Review Vulnerabilities
+                  </strong>
+
+                  <small>
+                    Investigate security findings
+                  </small>
+                </span>
+
+                <b>
+                  →
+                </b>
+              </Link>
+
+            </div>
+
           </div>
 
-          <div>
-            <span>
-              Running scans
-            </span>
-
-            <strong>
-              {runningScans.length}
-            </strong>
-          </div>
-
-          <div>
-            <span>
-              Failed scans
-            </span>
-
-            <strong>
-              {failedScans.length}
-            </strong>
-          </div>
-
-          <div>
-            <span>
-              Total findings
-            </span>
-
-            <strong>
-              {vulnerabilities.length}
-            </strong>
-          </div>
-
-        </div>
+        </section>
 
       </div>
-
     </DashboardLayout>
   );
 }
+
 
 export default Dashboard;
