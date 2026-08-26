@@ -1,6 +1,4 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
-
 import DashboardLayout from "../layouts/DashboardLayout";
 import { getPipelines } from "../services/api";
 
@@ -22,9 +20,14 @@ function Pipelines() {
         );
       }
 
-      setPipelines(data.pipelines || []);
+      setPipelines(
+        Array.isArray(data.pipelines)
+          ? data.pipelines
+          : []
+      );
     } catch (err) {
-      console.error("Pipelines error:", err);
+      console.error("Pipeline loading error:", err);
+
       setError(
         err.message || "Failed to load pipelines."
       );
@@ -38,329 +41,267 @@ function Pipelines() {
   }, []);
 
   function getStatusClass(status) {
-    return `pipeline-status pipeline-${String(
-      status || "unknown"
-    ).toLowerCase()}`;
-  }
-
-  function formatDate(date) {
-    if (!date) {
-      return "Date unavailable";
-    }
-
-    const parsedDate = new Date(date);
-
-    if (Number.isNaN(parsedDate.getTime())) {
-      return "Date unavailable";
-    }
-
-    return parsedDate.toLocaleString();
+    return String(status || "pending")
+      .toLowerCase()
+      .replace(/\s+/g, "-");
   }
 
   return (
     <DashboardLayout>
       <div className="pipelines-page">
 
-        {/* PAGE HEADER */}
+        {/* =================================================
+            HEADER
+        ================================================= */}
+
         <div className="page-header">
           <div>
-            <div className="breadcrumb">
+            <div className="page-breadcrumb">
               DevSecOps <span>/</span> Pipelines
             </div>
 
             <h1>Pipelines</h1>
 
             <p>
-              Monitor CI/CD pipelines, security stages,
-              builds and deployment activity.
+              Manage and monitor your DevSecOps CI/CD
+              pipelines.
             </p>
           </div>
 
           <button
             className="primary-button"
-            onClick={loadPipelines}
+            type="button"
           >
-            ↻ Refresh Pipelines
+            + New Pipeline
           </button>
         </div>
 
-        {/* SUMMARY */}
-        <div className="pipeline-stats-grid">
+        {/* =================================================
+            SUMMARY
+        ================================================= */}
 
-          <div className="details-card">
+        <div className="pipeline-summary">
+
+          <div className="pipeline-summary-card">
             <span>Total Pipelines</span>
-            <strong>{pipelines.length}</strong>
-            <small>Configured pipelines</small>
-          </div>
 
-          <div className="details-card">
-            <span>Running</span>
             <strong>
-              {
-                pipelines.filter(
-                  (pipeline) =>
-                    String(pipeline.status).toLowerCase() ===
-                    "running"
-                ).length
-              }
+              {pipelines.length}
             </strong>
-            <small>Currently running</small>
+
+            <small>
+              Configured pipelines
+            </small>
           </div>
 
-          <div className="details-card">
+          <div className="pipeline-summary-card">
             <span>Successful</span>
+
             <strong>
               {
                 pipelines.filter(
                   (pipeline) =>
-                    ["success", "successful", "completed"].includes(
-                      String(pipeline.status).toLowerCase()
-                    )
+                    ["success", "successful", "completed"]
+                      .includes(
+                        String(
+                          pipeline.status || ""
+                        ).toLowerCase()
+                      )
                 ).length
               }
             </strong>
-            <small>Successful runs</small>
+
+            <small>
+              Completed successfully
+            </small>
           </div>
 
-          <div className="details-card">
-            <span>Failed</span>
+          <div className="pipeline-summary-card">
+            <span>Running</span>
+
             <strong>
               {
                 pipelines.filter(
                   (pipeline) =>
-                    ["failed", "failure", "error"].includes(
-                      String(pipeline.status).toLowerCase()
-                    )
+                    String(
+                      pipeline.status || ""
+                    ).toLowerCase() === "running"
                 ).length
               }
             </strong>
-            <small>Failed runs</small>
+
+            <small>
+              Currently executing
+            </small>
+          </div>
+
+          <div className="pipeline-summary-card">
+            <span>Failed</span>
+
+            <strong>
+              {
+                pipelines.filter(
+                  (pipeline) =>
+                    String(
+                      pipeline.status || ""
+                    ).toLowerCase() === "failed"
+                ).length
+              }
+            </strong>
+
+            <small>
+              Require attention
+            </small>
           </div>
 
         </div>
 
-        {/* PIPELINES */}
-        <div className="dashboard-panel">
+        {/* =================================================
+            PIPELINES
+        ================================================= */}
 
-          <div className="section-header">
+        <div className="content-card">
+
+          <div className="card-header">
             <div>
-              <h2>Pipeline Activity</h2>
+              <h2>CI/CD Pipelines</h2>
 
               <p>
-                Recent CI/CD and DevSecOps pipeline executions.
+                Monitor pipeline executions and deployment
+                activity.
               </p>
             </div>
           </div>
 
-          {loading ? (
-            <div className="loading-state">
-              Loading pipelines...
-            </div>
-          ) : error ? (
-            <div className="pipeline-error">
-              <strong>Unable to load pipelines</strong>
+          {/* LOADING */}
 
-              <p>{error}</p>
-
-              <button
-                className="secondary-button"
-                onClick={loadPipelines}
-              >
-                Try Again
-              </button>
-            </div>
-          ) : pipelines.length === 0 ? (
+          {loading && (
             <div className="empty-state">
-
-              <div className="empty-icon">
-                ⚡
+              <div className="empty-state-icon">
+                ⌁
               </div>
 
-              <h3>No pipelines yet</h3>
+              <h3>
+                Loading pipelines...
+              </h3>
 
               <p>
-                Connect a project repository to create
-                your first DevSecOps pipeline.
+                Fetching pipeline information.
               </p>
-
-              <Link
-                to="/projects"
-                className="primary-button"
-              >
-                View Projects
-              </Link>
-
-            </div>
-          ) : (
-            <div className="pipeline-list">
-
-              {pipelines.map((pipeline) => (
-                <div
-                  className="pipeline-row"
-                  key={pipeline.id}
-                >
-
-                  <div className="pipeline-main">
-
-                    <div className="pipeline-icon">
-                      ⚡
-                    </div>
-
-                    <div>
-                      <strong>
-                        {pipeline.name ||
-                          `Pipeline #${pipeline.id}`}
-                      </strong>
-
-                      <span>
-                        {pipeline.project_name ||
-                          pipeline.project?.name ||
-                          "Project unavailable"}
-                      </span>
-                    </div>
-
-                  </div>
-
-                  <div className="pipeline-meta">
-
-                    <div>
-                      <span>Branch</span>
-                      <strong>
-                        {pipeline.branch || "main"}
-                      </strong>
-                    </div>
-
-                    <div>
-                      <span>Last Run</span>
-                      <strong>
-                        {formatDate(
-                          pipeline.updated_at ||
-                            pipeline.completed_at ||
-                            pipeline.started_at
-                        )}
-                      </strong>
-                    </div>
-
-                    <span
-                      className={getStatusClass(
-                        pipeline.status
-                      )}
-                    >
-                      {pipeline.status || "unknown"}
-                    </span>
-
-                    {pipeline.id && (
-                      <Link
-                        to={`/pipelines/${pipeline.id}`}
-                        className="secondary-button"
-                      >
-                        View
-                      </Link>
-                    )}
-
-                  </div>
-
-                </div>
-              ))}
-
             </div>
           )}
 
-        </div>
+          {/* ERROR */}
 
-        {/* DEVSECOPS PIPELINE FLOW */}
-        <div className="dashboard-panel">
+          {!loading && error && (
+            <div className="empty-state">
+              <div className="empty-state-icon">
+                !
+              </div>
 
-          <div className="section-header">
-            <div>
-              <h2>DevSecOps Pipeline</h2>
+              <h3>
+                Unable to load pipelines
+              </h3>
 
               <p>
-                Security controls integrated throughout
-                the software delivery lifecycle.
+                {error}
               </p>
+
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={loadPipelines}
+              >
+                Retry
+              </button>
             </div>
-          </div>
+          )}
 
-          <div className="pipeline-flow">
+          {/* EMPTY */}
 
-            <div className="pipeline-stage">
-              <div className="pipeline-stage-icon">
-                01
+          {!loading &&
+            !error &&
+            pipelines.length === 0 && (
+              <div className="empty-state">
+
+                <div className="empty-state-icon">
+                  ⚡
+                </div>
+
+                <h3>
+                  No pipelines yet
+                </h3>
+
+                <p>
+                  Connect a repository to start your
+                  first DevSecOps pipeline.
+                </p>
+
               </div>
+            )}
 
-              <strong>Source</strong>
+          {/* PIPELINE LIST */}
 
-              <span>
-                Repository
-              </span>
-            </div>
+          {!loading &&
+            !error &&
+            pipelines.length > 0 && (
+              <div className="pipeline-list">
 
-            <div className="pipeline-connector">
-              →
-            </div>
+                {pipelines.map((pipeline, index) => (
+                  <div
+                    className="pipeline-card"
+                    key={
+                      pipeline.id || index
+                    }
+                  >
 
-            <div className="pipeline-stage">
-              <div className="pipeline-stage-icon">
-                02
+                    <div className="pipeline-main">
+
+                      <div className="pipeline-icon">
+                        ⌁
+                      </div>
+
+                      <div>
+                        <h3>
+                          {pipeline.name ||
+                            pipeline.pipeline_name ||
+                            `Pipeline #${
+                              pipeline.id ||
+                              index + 1
+                            }`}
+                        </h3>
+
+                        <p>
+                          {pipeline.description ||
+                            "DevSecOps CI/CD pipeline"}
+                        </p>
+                      </div>
+
+                    </div>
+
+                    <div className="pipeline-meta">
+
+                      <span
+                        className={`pipeline-status ${getStatusClass(
+                          pipeline.status
+                        )}`}
+                      >
+                        {pipeline.status ||
+                          "Pending"}
+                      </span>
+
+                      <span className="pipeline-branch">
+                        {pipeline.branch ||
+                          "main"}
+                      </span>
+
+                    </div>
+
+                  </div>
+                ))}
+
               </div>
-
-              <strong>Build</strong>
-
-              <span>
-                Application
-              </span>
-            </div>
-
-            <div className="pipeline-connector">
-              →
-            </div>
-
-            <div className="pipeline-stage">
-              <div className="pipeline-stage-icon">
-                03
-              </div>
-
-              <strong>Security</strong>
-
-              <span>
-                SAST / Scan
-              </span>
-            </div>
-
-            <div className="pipeline-connector">
-              →
-            </div>
-
-            <div className="pipeline-stage">
-              <div className="pipeline-stage-icon">
-                04
-              </div>
-
-              <strong>Container</strong>
-
-              <span>
-                Image Scan
-              </span>
-            </div>
-
-            <div className="pipeline-connector">
-              →
-            </div>
-
-            <div className="pipeline-stage">
-              <div className="pipeline-stage-icon">
-                05
-              </div>
-
-              <strong>Deploy</strong>
-
-              <span>
-                Production
-              </span>
-            </div>
-
-          </div>
+            )}
 
         </div>
 
