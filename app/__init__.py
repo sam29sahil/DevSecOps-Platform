@@ -1,7 +1,7 @@
 from flask import Flask, jsonify
 
 from app.models import init_db
-from app.routes import projects_bp, scans_bp
+from app.routes import projects_bp, scans_bp, vulnerabilities_bp, pipelines_bp
 from flask_cors import CORS
 
 
@@ -18,7 +18,8 @@ def create_app():
     # Register API blueprints
     app.register_blueprint(projects_bp)
     app.register_blueprint(scans_bp)
-
+    app.register_blueprint(vulnerabilities_bp)
+    app.register_blueprint(pipelines_bp)
     @app.get("/api/health")
     def health_check():
         return jsonify({

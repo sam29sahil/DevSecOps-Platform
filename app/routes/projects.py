@@ -16,6 +16,10 @@ projects_bp = Blueprint(
 )
 
 
+# =========================================================
+# GET ALL PROJECTS
+# =========================================================
+
 @projects_bp.get("")
 def list_projects():
     """Get all projects."""
@@ -28,6 +32,10 @@ def list_projects():
         "projects": projects,
     })
 
+
+# =========================================================
+# GET SINGLE PROJECT
+# =========================================================
 
 @projects_bp.get("/<int:project_id>")
 def project_details(project_id):
@@ -47,13 +55,23 @@ def project_details(project_id):
     })
 
 
+# =========================================================
+# CREATE PROJECT
+# =========================================================
+
 @projects_bp.post("")
 def create_new_project():
     """Create a new project."""
 
     data = request.get_json(silent=True) or {}
 
-    name = str(data.get("name", "")).strip()
+    # -----------------------------------------------------
+    # Basic project information
+    # -----------------------------------------------------
+
+    name = str(
+        data.get("name", "")
+    ).strip()
 
     if not name:
         return jsonify({
@@ -73,11 +91,26 @@ def create_new_project():
         data.get("branch", "main")
     ).strip() or "main"
 
+    # -----------------------------------------------------
+    # Source directory
+    #
+    # "." means the root of the repository/project.
+    # -----------------------------------------------------
+
+    source_directory = str(
+        data.get("source_directory", ".")
+    ).strip() or "."
+
+    # -----------------------------------------------------
+    # Create project
+    # -----------------------------------------------------
+
     project = create_project(
         name=name,
         description=description,
         repository_url=repository_url,
         branch=branch,
+        source_directory=source_directory,
     )
 
     return jsonify({
@@ -86,6 +119,10 @@ def create_new_project():
         "project": project,
     }), 201
 
+
+# =========================================================
+# UPDATE PROJECT
+# =========================================================
 
 @projects_bp.put("/<int:project_id>")
 def update_existing_project(project_id):
@@ -101,8 +138,15 @@ def update_existing_project(project_id):
 
     data = request.get_json(silent=True) or {}
 
+    # -----------------------------------------------------
+    # Name
+    # -----------------------------------------------------
+
     name = str(
-        data.get("name", existing["name"])
+        data.get(
+            "name",
+            existing.get("name", ""),
+        )
     ).strip()
 
     if not name:
@@ -111,33 +155,66 @@ def update_existing_project(project_id):
             "error": "Project name is required",
         }), 400
 
+    # -----------------------------------------------------
+    # Description
+    # -----------------------------------------------------
+
     description = str(
         data.get(
             "description",
-            existing["description"] or "",
+            existing.get("description", "") or "",
         )
     ).strip()
+
+    # -----------------------------------------------------
+    # Repository URL
+    # -----------------------------------------------------
 
     repository_url = str(
         data.get(
             "repository_url",
-            existing["repository_url"] or "",
+            existing.get("repository_url", "") or "",
         )
     ).strip()
+
+    # -----------------------------------------------------
+    # Branch
+    # -----------------------------------------------------
 
     branch = str(
         data.get(
             "branch",
-            existing["branch"] or "main",
+            existing.get("branch", "main") or "main",
         )
     ).strip() or "main"
+
+    # -----------------------------------------------------
+    # Source directory
+    #
+    # Existing projects that don't have this value get ".".
+    # -----------------------------------------------------
+
+    source_directory = str(
+        data.get(
+            "source_directory",
+            existing.get("source_directory", ".") or ".",
+        )
+    ).strip() or "."
+
+    # -----------------------------------------------------
+    # Status
+    # -----------------------------------------------------
 
     status = str(
         data.get(
             "status",
-            existing["status"] or "active",
+            existing.get("status", "active") or "active",
         )
-    ).strip()
+    ).strip() or "active"
+
+    # -----------------------------------------------------
+    # Update project
+    # -----------------------------------------------------
 
     project = update_project(
         project_id=project_id,
@@ -145,6 +222,7 @@ def update_existing_project(project_id):
         description=description,
         repository_url=repository_url,
         branch=branch,
+        source_directory=source_directory,
         status=status,
     )
 
@@ -154,6 +232,10 @@ def update_existing_project(project_id):
         "project": project,
     })
 
+
+# =========================================================
+# DELETE PROJECT
+# =========================================================
 
 @projects_bp.delete("/<int:project_id>")
 def delete_existing_project(project_id):

@@ -15,6 +15,10 @@ from app.models import (
 from app.scanners.code_scanner import CodeScanner
 
 
+# ============================================================
+# SCANS BLUEPRINT
+# ============================================================
+
 scans_bp = Blueprint(
     "scans",
     __name__,
@@ -22,10 +26,23 @@ scans_bp = Blueprint(
 )
 
 
+# ============================================================
+# LIST SCANS
+# ============================================================
+
 @scans_bp.route("", methods=["GET"])
 def list_scans():
-    """Return security scans."""
-    project_id = request.args.get("project_id", type=int)
+    """
+    Return security scans.
+
+    Optional query parameter:
+        project_id
+    """
+
+    project_id = request.args.get(
+        "project_id",
+        type=int,
+    )
 
     scans = get_scans(project_id)
 
@@ -36,9 +53,16 @@ def list_scans():
     })
 
 
+# ============================================================
+# SCAN DETAILS
+# ============================================================
+
 @scans_bp.route("/<int:scan_id>", methods=["GET"])
 def scan_details(scan_id):
-    """Return one scan and its findings."""
+    """
+    Return one scan together with its findings.
+    """
+
     scan = get_scan(scan_id)
 
     if scan is None:
@@ -56,20 +80,50 @@ def scan_details(scan_id):
     })
 
 
+# ============================================================
+# RUN SECURITY SCAN
+# ============================================================
+
 @scans_bp.route("", methods=["POST"])
 def run_scan():
-    """Run a security scan against a local source directory."""
+    """
+    Run a security scan for a project.
+
+    The frontend only needs to provide:
+
+        {
+            "project_id": 4
+        }
+
+    The backend automatically gets source_directory
+    from the saved project configuration.
+    """
 
     data = request.get_json(silent=True) or {}
 
-    project_id = data.get("project_id")
-    source_directory = data.get("source_directory")
+    # --------------------------------------------------------
+    # PROJECT ID
+    # --------------------------------------------------------
 
-    if not project_id:
+    project_id = data.get("project_id")
+
+    if project_id is None:
         return jsonify({
             "success": False,
             "error": "project_id is required.",
         }), 400
+
+    try:
+        project_id = int(project_id)
+    except (TypeError, ValueError):
+        return jsonify({
+            "success": False,
+            "error": "project_id must be a valid integer.",
+        }), 400
+
+    # --------------------------------------------------------
+    # LOAD PROJECT
+    # --------------------------------------------------------
 
     project = get_project(project_id)
 
@@ -79,74 +133,272 @@ def run_scan():
             "error": "Project not found.",
         }), 404
 
+    # --------------------------------------------------------
+    # GET SAVED SOURCE DIRECTORY
+    # --------------------------------------------------------
+
+    source_directory = (
+        project.get("source_directory")
+        or "."
+    )
+
+    source_directory = str(
+        source_directory
+    ).strip()
+
     if not source_directory:
-        return jsonify({
-            "success": False,
-            "error": "source_directory is required.",
-        }), 400
+        source_directory = "."
+
+    # --------------------------------------------------------
+    # CREATE SCAN RECORD
+    # --------------------------------------------------------
 
     scan = create_scan(project_id)
 
+    if scan is None:
+        return jsonify({
+            "success": False,
+            "error": "Unable to create scan.",
+        }), 500
+
     try:
-        scanner = CodeScanner(source_directory)
+
+        # ----------------------------------------------------
+        # INITIALIZE SCANNER
+        # ----------------------------------------------------
+
+        scanner = CodeScanner(
+            source_directory
+        )
+
+        # ----------------------------------------------------
+        # RUN SCANNER
+        # ----------------------------------------------------
 
         result = scanner.scan()
 
-        findings = result["findings"]
+        findings = result.get(
+            "findings",
+            [],
+        )
+
+        # ----------------------------------------------------
+        # SAVE FINDINGS
+        # ----------------------------------------------------
 
         for finding in findings:
+
             create_finding(
                 scan_id=scan["id"],
-                rule_id=finding["rule_id"],
-                title=finding["title"],
-                severity=finding["severity"],
-                description=finding["description"],
-                recommendation=finding["recommendation"],
-                file_path=finding["file"],
-                line_number=finding["line"],
-                evidence=finding["evidence"],
+                rule_id=finding.get(
+                    "rule_id",
+                    "",
+                ),
+                title=finding.get(
+                    "title",
+                    "Security Finding",
+                ),
+                severity=finding.get(
+                    "severity",
+                    "LOW",
+                ),
+                description=finding.get(
+                    "description",
+                    "",
+                ),
+                recommendation=finding.get(
+                    "recommendation",
+                    "",
+                ),
+                file_path=finding.get(
+                    "file",
+                    "",
+                ),
+                line_number=finding.get(
+                    "line",
+                    0,
+                ),
+                evidence=finding.get(
+                    "evidence",
+                    "",
+                ),
             )
 
-        security_score = calculate_security_score(findings)
+        # ----------------------------------------------------
+        # CALCULATE SECURITY SCORE
+        # ----------------------------------------------------
+
+        security_score = calculate_security_score(
+            findings
+        )
 
         completed_at = datetime.utcnow().isoformat()
+
+        # ----------------------------------------------------
+        # UPDATE SCAN
+        # ----------------------------------------------------
 
         updated_scan = update_scan(
             scan_id=scan["id"],
             status="completed",
-            files_scanned=result["files_scanned"],
-            total_findings=result["total_findings"],
+            files_scanned=result.get(
+                "files_scanned",
+                0,
+            ),
+            total_findings=result.get(
+                "total_findings",
+                len(findings),
+            ),
             security_score=security_score,
             completed_at=completed_at,
         )
+
+        # ----------------------------------------------------
+        # RETURN RESULT
+        # ----------------------------------------------------
 
         return jsonify({
             "success": True,
             "message": "Security scan completed.",
             "scan": updated_scan,
-            "findings": get_findings(scan["id"]),
+            "findings": get_findings(
+                scan["id"]
+            ),
         }), 201
 
     except Exception as error:
-        update_scan(
-            scan_id=scan["id"],
-            status="failed",
-            completed_at=datetime.utcnow().isoformat(),
-        )
+
+        # ----------------------------------------------------
+        # MARK SCAN AS FAILED
+        # ----------------------------------------------------
+
+        try:
+            update_scan(
+                scan_id=scan["id"],
+                status="failed",
+                completed_at=datetime.utcnow().isoformat(),
+            )
+        except Exception:
+            pass
 
         return jsonify({
             "success": False,
             "error": str(error),
             "scan_id": scan["id"],
+            "project_id": project_id,
+            "source_directory": source_directory,
         }), 500
 
 
+# ============================================================
+# VULNERABILITIES
+# ============================================================
+
+vulnerabilities_bp = Blueprint(
+    "vulnerabilities",
+    __name__,
+    url_prefix="/api",
+)
+
+
+@vulnerabilities_bp.route(
+    "/vulnerabilities",
+    methods=["GET"],
+)
+def list_vulnerabilities():
+    """
+    Return security findings across all scans.
+
+    Optional filters:
+
+        project_id
+        severity
+    """
+
+    project_id = request.args.get(
+        "project_id",
+        type=int,
+    )
+
+    severity = request.args.get(
+        "severity",
+        type=str,
+    )
+
+    if severity:
+        severity = severity.upper()
+
+    scans = get_scans(project_id)
+
+    vulnerabilities = []
+
+    for scan in scans:
+
+        scan_id = scan["id"]
+
+        findings = get_findings(
+            scan_id
+        )
+
+        for finding in findings:
+
+            finding = dict(finding)
+
+            finding["scan_id"] = scan_id
+
+            finding["project_id"] = scan.get(
+                "project_id"
+            )
+
+            finding["project_name"] = scan.get(
+                "project_name"
+            )
+
+            # ------------------------------------------------
+            # SEVERITY FILTER
+            # ------------------------------------------------
+
+            if severity:
+
+                finding_severity = str(
+                    finding.get(
+                        "severity",
+                        "",
+                    )
+                ).upper()
+
+                if finding_severity != severity:
+                    continue
+
+            vulnerabilities.append(
+                finding
+            )
+
+    return jsonify({
+        "success": True,
+        "count": len(vulnerabilities),
+        "vulnerabilities": vulnerabilities,
+    })
+
+
+# ============================================================
+# SECURITY SCORE
+# ============================================================
+
 def calculate_security_score(findings):
     """
-    Calculate a simple security score.
+    Calculate an initial security score.
 
-    This is an initial scoring system. Later we'll replace it
-    with a more sophisticated risk model.
+    Starting score:
+        100
+
+    Deductions:
+        CRITICAL = 25
+        HIGH     = 15
+        MEDIUM   = 7
+        LOW      = 3
+
+    Score is always kept between 0 and 100.
     """
 
     deductions = {
@@ -159,7 +411,23 @@ def calculate_security_score(findings):
     score = 100
 
     for finding in findings:
-        severity = finding.get("severity", "LOW").upper()
-        score -= deductions.get(severity, 1)
 
-    return max(0, min(100, score))
+        severity = str(
+            finding.get(
+                "severity",
+                "LOW",
+            )
+        ).upper()
+
+        score -= deductions.get(
+            severity,
+            1,
+        )
+
+    return max(
+        0,
+        min(
+            100,
+            score,
+        ),
+    )

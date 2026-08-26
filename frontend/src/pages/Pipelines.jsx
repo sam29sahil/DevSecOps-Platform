@@ -4,10 +4,13 @@ import {
   createPipeline,
   deletePipeline,
   runPipeline,
+  getProjects,
 } from "../services/api";
 
 function Pipelines() {
   const [pipelines, setPipelines] = useState([]);
+  const [projects, setProjects] = useState([]);
+  const [projectsLoading, setProjectsLoading] = useState(true);
 
   const [loading, setLoading] = useState(true);
   const [runningId, setRunningId] = useState(null);
@@ -23,7 +26,7 @@ function Pipelines() {
     description: "",
     repository_url: "",
     branch: "main",
-    project_id: "4",
+    project_id: "",
   });
 
   const [lastRunFindings, setLastRunFindings] = useState([]);
@@ -33,7 +36,31 @@ function Pipelines() {
   /* ========================================================
      LOAD PIPELINES
   ======================================================== */
+  async function loadProjects() {
+    try {
+      setProjectsLoading(true);
 
+      const data = await getProjects();
+
+      if (!data.success) {
+        throw new Error(
+          data.error || "Failed to load projects."
+        );
+      }
+
+      setProjects(
+        Array.isArray(data.projects)
+          ? data.projects
+          : []
+      );
+    } catch (err) {
+      setError(
+        err.message || "Failed to load projects."
+      );
+    } finally {
+      setProjectsLoading(false);
+    }
+  }
   async function loadPipelines() {
     try {
       setLoading(true);
@@ -63,6 +90,7 @@ function Pipelines() {
 
   useEffect(() => {
     loadPipelines();
+    loadProjects();
   }, []);
 
   /* ========================================================
@@ -92,6 +120,11 @@ function Pipelines() {
 
       if (!form.repository_url.trim()) {
         setError("Repository URL is required.");
+        return;
+      }
+
+      if (!form.project_id) {
+        setError("Please select a project.");
         return;
       }
 
@@ -450,18 +483,31 @@ function Pipelines() {
 
               <div className="form-group">
                 <label>
-                  Project ID
+                  Project
                 </label>
 
-                <input
-                  type="number"
+                <select
                   name="project_id"
                   value={form.project_id}
                   onChange={handleFormChange}
-                  placeholder="4"
-                />
-              </div>
+                  disabled={projectsLoading}
+                >
+                  <option value="">
+                    {projectsLoading
+                      ? "Loading projects..."
+                      : "Select a project"}
+                  </option>
 
+                  {projects.map((project) => (
+                    <option
+                      key={project.id}
+                      value={project.id}
+                    >
+                      {project.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
               <div className="form-group">
                 <label>
                   Description

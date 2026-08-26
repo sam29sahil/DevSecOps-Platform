@@ -3,20 +3,31 @@ from pathlib import Path
 from datetime import datetime
 
 
+# ============================================================
+# DATABASE
+# ============================================================
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATABASE_PATH = BASE_DIR / "devsecops.db"
 
 
 def get_db():
     """Create and return a SQLite database connection."""
+
     connection = sqlite3.connect(DATABASE_PATH)
     connection.row_factory = sqlite3.Row
+
     return connection
 
 
 def init_db():
-    """Create database tables if they don't already exist."""
+    """Create database tables and apply safe schema updates."""
+
     db = get_db()
+
+    # ========================================================
+    # PROJECTS
+    # ========================================================
 
     db.execute("""
         CREATE TABLE IF NOT EXISTS projects (
@@ -25,11 +36,44 @@ def init_db():
             description TEXT,
             repository_url TEXT,
             branch TEXT DEFAULT 'main',
+            source_directory TEXT DEFAULT '.',
             status TEXT DEFAULT 'active',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
     """)
+
+    # --------------------------------------------------------
+    # IMPORTANT:
+    # Existing databases already have the projects table.
+    # Add source_directory without deleting existing projects.
+    # --------------------------------------------------------
+
+    project_columns = {
+        row["name"]
+        for row in db.execute(
+            "PRAGMA table_info(projects)"
+        ).fetchall()
+    }
+
+    if "source_directory" not in project_columns:
+        db.execute("""
+            ALTER TABLE projects
+            ADD COLUMN source_directory TEXT DEFAULT '.'
+        """)
+
+    # Make sure old projects receive the default value.
+
+    db.execute("""
+        UPDATE projects
+        SET source_directory = '.'
+        WHERE source_directory IS NULL
+           OR TRIM(source_directory) = ''
+    """)
+
+    # ========================================================
+    # SCANS
+    # ========================================================
 
     db.execute("""
         CREATE TABLE IF NOT EXISTS scans (
@@ -47,6 +91,10 @@ def init_db():
                 ON DELETE CASCADE
         )
     """)
+
+    # ========================================================
+    # FINDINGS
+    # ========================================================
 
     db.execute("""
         CREATE TABLE IF NOT EXISTS findings (
@@ -80,11 +128,22 @@ def create_project(
     description="",
     repository_url="",
     branch="main",
+    source_directory=".",
 ):
     """Create a new project."""
+
     db = get_db()
 
     now = datetime.utcnow().isoformat()
+
+    source_directory = (
+        str(source_directory).strip()
+        if source_directory is not None
+        else "."
+    )
+
+    if not source_directory:
+        source_directory = "."
 
     cursor = db.execute(
         """
@@ -94,17 +153,19 @@ def create_project(
             description,
             repository_url,
             branch,
+            source_directory,
             status,
             created_at,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             name,
             description,
             repository_url,
             branch,
+            source_directory,
             "active",
             now,
             now,
@@ -121,6 +182,7 @@ def create_project(
 
 def get_projects():
     """Return all projects."""
+
     db = get_db()
 
     projects = db.execute(
@@ -138,6 +200,7 @@ def get_projects():
 
 def get_project(project_id):
     """Return one project by ID."""
+
     db = get_db()
 
     project = db.execute(
@@ -163,12 +226,23 @@ def update_project(
     description="",
     repository_url="",
     branch="main",
+    source_directory=".",
     status="active",
 ):
     """Update an existing project."""
+
     db = get_db()
 
     now = datetime.utcnow().isoformat()
+
+    source_directory = (
+        str(source_directory).strip()
+        if source_directory is not None
+        else "."
+    )
+
+    if not source_directory:
+        source_directory = "."
 
     cursor = db.execute(
         """
@@ -178,6 +252,7 @@ def update_project(
             description = ?,
             repository_url = ?,
             branch = ?,
+            source_directory = ?,
             status = ?,
             updated_at = ?
         WHERE id = ?
@@ -187,6 +262,7 @@ def update_project(
             description,
             repository_url,
             branch,
+            source_directory,
             status,
             now,
             project_id,
@@ -207,6 +283,7 @@ def update_project(
 
 def delete_project(project_id):
     """Delete a project."""
+
     db = get_db()
 
     cursor = db.execute(
@@ -228,6 +305,7 @@ def delete_project(project_id):
 
 def get_project_count():
     """Return the number of active projects."""
+
     db = get_db()
 
     result = db.execute(
@@ -249,6 +327,7 @@ def get_project_count():
 
 def create_scan(project_id):
     """Create a new security scan."""
+
     db = get_db()
 
     now = datetime.utcnow().isoformat()
@@ -288,6 +367,7 @@ def create_scan(project_id):
 
 def get_scan(scan_id):
     """Return one scan."""
+
     db = get_db()
 
     scan = db.execute(
@@ -313,6 +393,7 @@ def get_scan(scan_id):
 
 def get_scans(project_id=None):
     """Return scans, optionally filtered by project."""
+
     db = get_db()
 
     if project_id is None:
@@ -327,6 +408,7 @@ def get_scans(project_id=None):
             ORDER BY scans.id DESC
             """
         ).fetchall()
+
     else:
         scans = db.execute(
             """
@@ -356,6 +438,7 @@ def update_scan(
     completed_at=None,
 ):
     """Update scan information."""
+
     db = get_db()
 
     fields = []
@@ -418,6 +501,7 @@ def create_finding(
     evidence,
 ):
     """Store one security finding."""
+
     db = get_db()
 
     now = datetime.utcnow().isoformat()
@@ -463,6 +547,7 @@ def create_finding(
 
 def get_finding(finding_id):
     """Return one finding."""
+
     db = get_db()
 
     finding = db.execute(
@@ -484,6 +569,7 @@ def get_finding(finding_id):
 
 def get_findings(scan_id=None):
     """Return findings, optionally filtered by scan."""
+
     db = get_db()
 
     if scan_id is None:
@@ -494,6 +580,7 @@ def get_findings(scan_id=None):
             ORDER BY id DESC
             """
         ).fetchall()
+
     else:
         findings = db.execute(
             """
