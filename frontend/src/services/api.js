@@ -191,7 +191,31 @@ export async function runPipeline(pipelineId) {
 export async function getReport(scanId) {
   return request(`/reports/${scanId}`);
 }
+/* =========================================================
+   CONTAINERS
+========================================================= */
 
+export async function getContainers() {
+  return request("/containers");
+}
+
+export async function startContainer(containerId) {
+  return request(`/containers/${containerId}/start`, {
+    method: "POST",
+  });
+}
+
+export async function stopContainer(containerId) {
+  return request(`/containers/${containerId}/stop`, {
+    method: "POST",
+  });
+}
+
+export async function restartContainer(containerId) {
+  return request(`/containers/${containerId}/restart`, {
+    method: "POST",
+  });
+}
 /* =========================================================
    HEALTH
 ========================================================= */

@@ -1,867 +1,770 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
-
+import { getScans } from "../services/api";
 import DashboardLayout from "../layouts/DashboardLayout";
+import "./Reports.css";
 
-import {
-  getProjects,
-  createProject,
-  deleteProject,
-} from "../services/api";
+const API_BASE_URL = "http://127.0.0.1:5000/api";
 
-function Projects() {
-  const [projects, setProjects] = useState([]);
+function Reports() {
+  const [scans, setScans] = useState([]);
+  const [selectedScanId, setSelectedScanId] = useState("");
+  const [report, setReport] = useState(null);
 
-  const [loading, setLoading] = useState(true);
+  const [loadingScans, setLoadingScans] = useState(true);
+  const [loadingReport, setLoadingReport] = useState(false);
   const [error, setError] = useState("");
 
-  const [showCreateForm, setShowCreateForm] = useState(false);
-
-  const [creating, setCreating] = useState(false);
-  const [deletingId, setDeletingId] = useState(null);
-
   /* =========================================================
-     SEARCH / FILTER
+     LOAD COMPLETED SCANS
   ========================================================= */
 
-  const [searchQuery, setSearchQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState("all");
-
-  /* =========================================================
-     FORM
-  ========================================================= */
-
-  const [formData, setFormData] = useState({
-    name: "",
-    branch: "main",
-    repository_url: "",
-    description: "",
-  });
-
-  /* =========================================================
-     LOAD PROJECTS
-  ========================================================= */
-
-  async function loadProjects() {
+  async function loadScans() {
     try {
-      setLoading(true);
+      setLoadingScans(true);
       setError("");
 
-      const data = await getProjects();
+      const data = await getScans();
 
-      if (!data.success) {
+      const allScans = Array.isArray(data.scans)
+        ? data.scans
+        : [];
+
+      const completedScans = allScans.filter(
+        (scan) =>
+          String(scan.status || "").toLowerCase() ===
+          "completed"
+      );
+
+      setScans(completedScans);
+
+      if (completedScans.length > 0) {
+        const currentExists = completedScans.some(
+          (scan) =>
+            String(scan.id) === String(selectedScanId)
+        );
+
+        if (!selectedScanId || !currentExists) {
+          setSelectedScanId(String(completedScans[0].id));
+        }
+      } else {
+        setSelectedScanId("");
+        setReport(null);
+      }
+    } catch (err) {
+      setError(
+        err.message || "Unable to load security scans."
+      );
+    } finally {
+      setLoadingScans(false);
+    }
+  }
+
+  /* =========================================================
+     LOAD REPORT
+  ========================================================= */
+
+  async function loadReport(scanId) {
+    if (!scanId) {
+      setReport(null);
+      return;
+    }
+
+    try {
+      setLoadingReport(true);
+      setError("");
+
+      const response = await fetch(
+        `${API_BASE_URL}/reports/${scanId}`
+      );
+
+      let data = {};
+
+      try {
+        data = await response.json();
+      } catch {
+        data = {};
+      }
+
+      if (!response.ok) {
         throw new Error(
-          data.error || "Failed to load projects."
+          data.error ||
+            data.message ||
+            `Failed to load report (${response.status})`
         );
       }
 
-      setProjects(
-        Array.isArray(data.projects)
-          ? data.projects
-          : []
-      );
+      setReport(data.report || null);
     } catch (err) {
-      console.error(
-        "Projects loading error:",
-        err
-      );
-
+      setReport(null);
       setError(
-        err.message ||
-          "Failed to load projects."
+        err.message || "Unable to load security report."
       );
     } finally {
-      setLoading(false);
+      setLoadingReport(false);
     }
   }
+
+  /* =========================================================
+     INITIAL LOAD
+  ========================================================= */
 
   useEffect(() => {
-    loadProjects();
+    loadScans();
   }, []);
 
-  /* =========================================================
-     FORM HANDLING
-  ========================================================= */
-
-  function handleChange(event) {
-    const { name, value } = event.target;
-
-    setFormData((previous) => ({
-      ...previous,
-      [name]: value,
-    }));
-  }
-
-  function resetForm() {
-    setFormData({
-      name: "",
-      branch: "main",
-      repository_url: "",
-      description: "",
-    });
-  }
-
-  function closeCreateForm() {
-    if (creating) {
-      return;
+  useEffect(() => {
+    if (selectedScanId) {
+      loadReport(selectedScanId);
     }
-
-    resetForm();
-    setShowCreateForm(false);
-  }
+  }, [selectedScanId]);
 
   /* =========================================================
-     CREATE PROJECT
+     SELECTED SCAN
   ========================================================= */
 
-  async function handleCreateProject(event) {
-    event.preventDefault();
-
-    if (!formData.name.trim()) {
-      setError("Project name is required.");
-      return;
-    }
-
-    try {
-      setCreating(true);
-      setError("");
-
-      const data = await createProject({
-        name: formData.name.trim(),
-
-        branch:
-          formData.branch.trim() ||
-          "main",
-
-        repository_url:
-          formData.repository_url.trim(),
-
-        description:
-          formData.description.trim(),
-      });
-
-      if (!data.success) {
-        throw new Error(
-          data.error ||
-            "Failed to create project."
-        );
-      }
-
-      await loadProjects();
-
-      resetForm();
-      setShowCreateForm(false);
-    } catch (err) {
-      console.error(
-        "Create project error:",
-        err
-      );
-
-      setError(
-        err.message ||
-          "Failed to create project."
-      );
-    } finally {
-      setCreating(false);
-    }
-  }
-
-  /* =========================================================
-     DELETE PROJECT
-  ========================================================= */
-
-  async function handleDeleteProject(
-    projectId
-  ) {
-    const confirmed = window.confirm(
-      "Are you sure you want to delete this project?"
+  const selectedScan = useMemo(() => {
+    return scans.find(
+      (scan) =>
+        String(scan.id) === String(selectedScanId)
     );
+  }, [scans, selectedScanId]);
 
-    if (!confirmed) {
-      return;
-    }
+  /* =========================================================
+     SUMMARY
+  ========================================================= */
 
-    try {
-      setDeletingId(projectId);
-      setError("");
+  const summary = report?.summary || {};
 
-      const data =
-        await deleteProject(projectId);
+  const severityCounts = {
+    CRITICAL:
+      summary.severity_counts?.CRITICAL || 0,
 
-      if (!data.success) {
-        throw new Error(
-          data.error ||
-            "Failed to delete project."
-        );
-      }
+    HIGH:
+      summary.severity_counts?.HIGH || 0,
 
-      setProjects((previous) =>
-        previous.filter(
-          (project) =>
-            Number(project.id) !==
-            Number(projectId)
-        )
-      );
-    } catch (err) {
-      console.error(
-        "Delete project error:",
-        err
-      );
+    MEDIUM:
+      summary.severity_counts?.MEDIUM || 0,
 
-      setError(
-        err.message ||
-          "Failed to delete project."
-      );
-    } finally {
-      setDeletingId(null);
-    }
+    LOW:
+      summary.severity_counts?.LOW || 0,
+  };
+
+  const findings = Array.isArray(report?.findings)
+    ? report.findings
+    : [];
+
+  const securityScore =
+    Number(summary.security_score ?? 0);
+
+  /* =========================================================
+     PRINT REPORT
+  ========================================================= */
+
+  function printReport() {
+    window.print();
   }
 
   /* =========================================================
-     FILTER PROJECTS
-  ========================================================= */
-
-  const filteredProjects = useMemo(() => {
-    const query =
-      searchQuery.trim().toLowerCase();
-
-    return projects.filter((project) => {
-      const name = String(
-        project.name || ""
-      ).toLowerCase();
-
-      const description = String(
-        project.description || ""
-      ).toLowerCase();
-
-      const repository = String(
-        project.repository_url || ""
-      ).toLowerCase();
-
-      const branch = String(
-        project.branch || ""
-      ).toLowerCase();
-
-      const matchesSearch =
-        !query ||
-        name.includes(query) ||
-        description.includes(query) ||
-        repository.includes(query) ||
-        branch.includes(query);
-
-      const projectStatus = String(
-        project.status || "active"
-      ).toLowerCase();
-
-      const matchesStatus =
-        statusFilter === "all" ||
-        projectStatus === statusFilter;
-
-      return (
-        matchesSearch &&
-        matchesStatus
-      );
-    });
-  }, [
-    projects,
-    searchQuery,
-    statusFilter,
-  ]);
-
-  /* =========================================================
-     CLEAR FILTERS
-  ========================================================= */
-
-  function clearFilters() {
-    setSearchQuery("");
-    setStatusFilter("all");
-  }
-
-  /* =========================================================
-     LOADING STATE
-  ========================================================= */
-
-  if (loading) {
-    return (
-      <DashboardLayout>
-        <div className="projects-page">
-
-          <div className="page-header">
-
-            <div>
-              <div className="breadcrumb">
-                DevSecOps
-                <span>/</span>
-                Projects
-              </div>
-
-              <h1>Projects</h1>
-
-              <p>
-                Manage applications and
-                repositories connected to
-                your DevSecOps pipelines.
-              </p>
-            </div>
-
-          </div>
-
-          <div className="loading-state">
-            <div className="loading-spinner"></div>
-
-            <span>
-              Loading projects...
-            </span>
-          </div>
-
-        </div>
-      </DashboardLayout>
-    );
-  }
-
-  /* =========================================================
-     PAGE
+     RENDER
   ========================================================= */
 
   return (
     <DashboardLayout>
+      <div className="reports-page">
 
-      <div className="projects-page">
+        {/* =====================================================
+            PAGE HEADER
+        ===================================================== */}
 
-        {/* =================================================
-            HEADER
-        ================================================= */}
+        <div className="reports-header">
 
-        <div className="page-header projects-header">
+          <div className="reports-heading">
 
-          <div>
-
-            <div className="breadcrumb">
-              DevSecOps
-              <span>/</span>
-              <strong>Projects</strong>
+            <div className="reports-eyebrow">
+              SECURITY REPORTING
             </div>
 
-            <h1>Projects</h1>
+            <h1>Security Reports</h1>
 
             <p>
-              Manage applications and
-              repositories connected to
-              your DevSecOps pipelines.
+              Generate and review detailed security
+              assessments from completed scans.
             </p>
 
           </div>
 
-          <button
-            type="button"
-            className="primary-button"
-            onClick={() =>
-              setShowCreateForm(
-                (previous) => !previous
-              )
-            }
-          >
-            {showCreateForm
-              ? "× Close"
-              : "+ Create Project"}
-          </button>
+          <div className="reports-actions">
+
+            <button
+              className="report-button report-button-secondary"
+              onClick={loadScans}
+              disabled={loadingScans}
+            >
+              ↻ Refresh
+            </button>
+
+            <button
+              className="report-button report-button-primary"
+              onClick={printReport}
+              disabled={!report}
+            >
+              ↓ Print Report
+            </button>
+
+          </div>
 
         </div>
 
-        {/* =================================================
+        {/* =====================================================
             ERROR
-        ================================================= */}
+        ===================================================== */}
 
         {error && (
-          <div className="error-message">
-
-            <strong>Error:</strong>{" "}
-            {error}
-
+          <div className="report-error">
+            <span>!</span>
+            <div>
+              <strong>Unable to load report</strong>
+              <p>{error}</p>
+            </div>
           </div>
         )}
 
-        {/* =================================================
-            CREATE PROJECT FORM
-        ================================================= */}
+        {/* =====================================================
+            SCAN SELECTOR
+        ===================================================== */}
 
-        {showCreateForm && (
-          <div className="create-project-panel">
+        <section className="report-card scan-selector-card">
 
-            <div className="section-header">
+          <div className="card-section-label">
+            REPORT SOURCE
+          </div>
 
-              <div>
+          <div className="scan-selector-content">
 
-                <h2>
-                  Create Project
-                </h2>
+            <div>
+              <h2>Select Security Scan</h2>
 
-                <p>
-                  Connect an application
-                  repository to your
-                  DevSecOps platform.
-                </p>
-
-              </div>
-
+              <p>
+                Choose an existing completed scan to
+                generate its security report.
+              </p>
             </div>
 
-            <form
-              className="project-form"
-              onSubmit={
-                handleCreateProject
-              }
-            >
+            <div className="scan-select-wrapper">
 
-              <div className="form-grid">
+              <label htmlFor="report-scan">
+                Scan
+              </label>
 
-                {/* PROJECT NAME */}
-
-                <div className="form-group">
-
-                  <label htmlFor="name">
-                    Project Name
-                  </label>
-
-                  <input
-                    id="name"
-                    name="name"
-                    type="text"
-                    value={formData.name}
-                    onChange={
-                      handleChange
-                    }
-                    placeholder="My Application"
-                    required
-                  />
-
+              {loadingScans ? (
+                <div className="scan-loading">
+                  Loading scans...
                 </div>
-
-                {/* BRANCH */}
-
-                <div className="form-group">
-
-                  <label htmlFor="branch">
-                    Branch
-                  </label>
-
-                  <input
-                    id="branch"
-                    name="branch"
-                    type="text"
-                    value={
-                      formData.branch
-                    }
-                    onChange={
-                      handleChange
-                    }
-                    placeholder="main"
-                  />
-
-                </div>
-
-              </div>
-
-              {/* REPOSITORY */}
-
-              <div className="form-group">
-
-                <label htmlFor="repository_url">
-                  Repository URL
-                </label>
-
-                <input
-                  id="repository_url"
-                  name="repository_url"
-                  type="url"
-                  value={
-                    formData.repository_url
+              ) : (
+                <select
+                  id="report-scan"
+                  value={selectedScanId}
+                  onChange={(event) =>
+                    setSelectedScanId(
+                      event.target.value
+                    )
                   }
-                  onChange={
-                    handleChange
-                  }
-                  placeholder="https://github.com/user/repository"
-                />
-
-              </div>
-
-              {/* DESCRIPTION */}
-
-              <div className="form-group">
-
-                <label htmlFor="description">
-                  Description
-                </label>
-
-                <textarea
-                  id="description"
-                  name="description"
-                  rows="4"
-                  value={
-                    formData.description
-                  }
-                  onChange={
-                    handleChange
-                  }
-                  placeholder="Describe this project..."
-                />
-
-              </div>
-
-              {/* FORM ACTIONS */}
-
-              <div className="form-actions">
-
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={
-                    closeCreateForm
-                  }
-                  disabled={creating}
+                  disabled={scans.length === 0}
                 >
-                  Cancel
-                </button>
-
-                <button
-                  type="submit"
-                  className="primary-button"
-                  disabled={creating}
-                >
-                  {creating
-                    ? "Creating..."
-                    : "Create Project"}
-                </button>
-
-              </div>
-
-            </form>
-
-          </div>
-        )}
-
-        {/* =================================================
-            SEARCH + FILTER TOOLBAR
-        ================================================= */}
-
-        {projects.length > 0 && (
-          <div className="projects-toolbar">
-
-            <div className="projects-count">
-
-              <strong>
-                {filteredProjects.length}
-              </strong>{" "}
-
-              {filteredProjects.length === 1
-                ? "project"
-                : "projects"}
-
-              {filteredProjects.length !==
-                projects.length && (
-                <span className="filter-count">
-                  {" "}
-                  of {projects.length}
-                </span>
+                  {scans.length === 0 ? (
+                    <option value="">
+                      No completed scans
+                    </option>
+                  ) : (
+                    scans.map((scan) => (
+                      <option
+                        key={scan.id}
+                        value={scan.id}
+                      >
+                        Scan #{scan.id} —{" "}
+                        {scan.project_name ||
+                          `Project #${scan.project_id}`}{" "}
+                        — completed
+                      </option>
+                    ))
+                  )}
+                </select>
               )}
 
             </div>
 
-            <div className="projects-filters">
+          </div>
 
-              {/* SEARCH */}
+        </section>
 
-              <div className="project-search">
+        {/* =====================================================
+            NO REPORT
+        ===================================================== */}
 
-                <span className="search-icon">
-                  ⌕
-                </span>
+        {!loadingReport &&
+          !report &&
+          !loadingScans &&
+          scans.length === 0 && (
+            <section className="report-card empty-report">
 
-                <input
-                  type="text"
-                  placeholder="Search projects..."
-                  value={searchQuery}
-                  onChange={(event) =>
-                    setSearchQuery(
-                      event.target.value
-                    )
-                  }
-                />
-
-                {searchQuery && (
-                  <button
-                    type="button"
-                    className="clear-search"
-                    onClick={() =>
-                      setSearchQuery("")
-                    }
-                    aria-label="Clear search"
-                  >
-                    ×
-                  </button>
-                )}
-
+              <div className="empty-report-icon">
+                ✓
               </div>
 
-              {/* STATUS FILTER */}
-
-              <select
-                value={statusFilter}
-                onChange={(event) =>
-                  setStatusFilter(
-                    event.target.value
-                  )
-                }
-                className="status-filter"
-                aria-label="Filter by status"
-              >
-                <option value="all">
-                  All Status
-                </option>
-
-                <option value="active">
-                  Active
-                </option>
-
-                <option value="pending">
-                  Pending
-                </option>
-
-                <option value="inactive">
-                  Inactive
-                </option>
-
-                <option value="failed">
-                  Failed
-                </option>
-
-              </select>
-
-            </div>
-
-          </div>
-        )}
-
-        {/* =================================================
-            NO PROJECTS
-        ================================================= */}
-
-        {projects.length === 0 && (
-          <div className="empty-state large-empty-state">
-
-            <div className="empty-icon">
-              ◇
-            </div>
-
-            <h2>
-              No projects yet
-            </h2>
-
-            <p>
-              Create your first project
-              and connect its repository
-              to begin security scanning.
-            </p>
-
-            <button
-              type="button"
-              className="primary-button"
-              onClick={() =>
-                setShowCreateForm(true)
-              }
-            >
-              + Create Project
-            </button>
-
-          </div>
-        )}
-
-        {/* =================================================
-            NO FILTER RESULTS
-        ================================================= */}
-
-        {projects.length > 0 &&
-          filteredProjects.length === 0 && (
-            <div className="empty-state large-empty-state">
-
-              <div className="empty-icon">
-                ⌕
-              </div>
-
-              <h2>
-                No matching projects
-              </h2>
+              <h2>No completed scans</h2>
 
               <p>
-                No projects match your
-                current search or status
-                filter.
+                Complete a security scan before generating
+                a security report.
               </p>
 
-              <button
-                type="button"
-                className="secondary-button"
-                onClick={clearFilters}
-              >
-                Clear Filters
-              </button>
-
-            </div>
+            </section>
           )}
 
-        {/* =================================================
-            PROJECT GRID
-        ================================================= */}
+        {/* =====================================================
+            REPORT
+        ===================================================== */}
 
-        {filteredProjects.length > 0 && (
-          <div className="projects-grid">
+        {loadingReport ? (
+          <section className="report-card report-loading">
 
-            {filteredProjects.map(
-              (project) => {
+            <div className="loading-spinner"></div>
 
-                const projectStatus =
-                  String(
-                    project.status ||
-                      "active"
-                  ).toLowerCase();
+            <h2>Loading Security Report</h2>
 
-                return (
-                  <article
-                    className="project-card"
-                    key={project.id}
+            <p>
+              Preparing the security assessment...
+            </p>
+
+          </section>
+        ) : (
+          report && (
+            <>
+
+              {/* =================================================
+                  PROJECT / SCAN HEADER
+              ================================================= */}
+
+              <section className="report-card assessment-header">
+
+                <div>
+
+                  <div className="card-section-label">
+                    SECURITY ASSESSMENT
+                  </div>
+
+                  <h2>
+                    {report.scan?.project_name ||
+                      selectedScan?.project_name ||
+                      "Security Project"}
+                  </h2>
+
+                  <p>
+                    Scan #{report.scan?.id ||
+                      selectedScan?.id}
+                  </p>
+
+                </div>
+
+                <div className="completed-badge">
+                  <span></span>
+                  COMPLETED
+                </div>
+
+              </section>
+
+              {/* =================================================
+                  SUMMARY CARDS
+              ================================================= */}
+
+              <section className="report-summary-grid">
+
+                <div className="summary-card">
+
+                  <div className="summary-label">
+                    Security Score
+                  </div>
+
+                  <div
+                    className={`summary-value score-value ${
+                      securityScore >= 80
+                        ? "score-good"
+                        : securityScore >= 60
+                        ? "score-warning"
+                        : "score-danger"
+                    }`}
                   >
+                    {securityScore}%
+                  </div>
 
-                    {/* CARD HEADER */}
+                  <div className="summary-description">
+                    Overall security posture
+                  </div>
 
-                    <div className="project-card-header">
+                </div>
 
-                      <div>
+                <div className="summary-card">
 
-                        <h2>
-                          {project.name ||
-                            "Unnamed Project"}
-                        </h2>
+                  <div className="summary-label">
+                    Files Scanned
+                  </div>
 
-                        <span className="project-id">
-                          #{project.id}
-                        </span>
+                  <div className="summary-value">
+                    {summary.files_scanned || 0}
+                  </div>
 
-                      </div>
+                  <div className="summary-description">
+                    Files analyzed
+                  </div>
 
-                      <span
-                        className={`project-status status-${projectStatus}`}
-                      >
-                        {projectStatus}
-                      </span>
+                </div>
 
+                <div className="summary-card">
+
+                  <div className="summary-label">
+                    Total Findings
+                  </div>
+
+                  <div className="summary-value">
+                    {summary.total_findings || 0}
+                  </div>
+
+                  <div className="summary-description">
+                    Security issues detected
+                  </div>
+
+                </div>
+
+                <div className="summary-card">
+
+                  <div className="summary-label">
+                    Scan Status
+                  </div>
+
+                  <div className="summary-status">
+                    Completed
+                  </div>
+
+                  <div className="summary-description">
+                    Current scan state
+                  </div>
+
+                </div>
+
+              </section>
+
+              {/* =================================================
+                  SECURITY OVERVIEW
+              ================================================= */}
+
+              <section className="report-card">
+
+                <div className="card-section-label">
+                  RISK ANALYSIS
+                </div>
+
+                <div className="section-title-row">
+
+                  <div>
+                    <h2>Severity Distribution</h2>
+
+                    <p>
+                      Breakdown of security findings
+                      detected during this scan.
+                    </p>
+                  </div>
+
+                </div>
+
+                <div className="severity-grid">
+
+                  <div className="severity-item severity-critical">
+                    <div className="severity-top">
+                      <span className="severity-dot"></span>
+                      <span>Critical</span>
                     </div>
 
-                    {/* DESCRIPTION */}
+                    <strong>
+                      {severityCounts.CRITICAL}
+                    </strong>
+                  </div>
 
-                    <p className="project-description">
+                  <div className="severity-item severity-high">
+                    <div className="severity-top">
+                      <span className="severity-dot"></span>
+                      <span>High</span>
+                    </div>
 
-                      {project.description ||
-                        "No project description provided."}
+                    <strong>
+                      {severityCounts.HIGH}
+                    </strong>
+                  </div>
 
+                  <div className="severity-item severity-medium">
+                    <div className="severity-top">
+                      <span className="severity-dot"></span>
+                      <span>Medium</span>
+                    </div>
+
+                    <strong>
+                      {severityCounts.MEDIUM}
+                    </strong>
+                  </div>
+
+                  <div className="severity-item severity-low">
+                    <div className="severity-top">
+                      <span className="severity-dot"></span>
+                      <span>Low</span>
+                    </div>
+
+                    <strong>
+                      {severityCounts.LOW}
+                    </strong>
+                  </div>
+
+                </div>
+
+              </section>
+
+              {/* =================================================
+                  FINDINGS
+              ================================================= */}
+
+              <section className="report-card findings-section">
+
+                <div className="card-section-label">
+                  SECURITY FINDINGS
+                </div>
+
+                <div className="section-title-row">
+
+                  <div>
+                    <h2>Detected Vulnerabilities</h2>
+
+                    <p>
+                      Security issues identified during
+                      the selected scan.
+                    </p>
+                  </div>
+
+                  <div className="findings-count">
+                    {findings.length} finding
+                    {findings.length === 1
+                      ? ""
+                      : "s"}
+                  </div>
+
+                </div>
+
+                {findings.length === 0 ? (
+                  <div className="no-findings">
+
+                    <div className="no-findings-icon">
+                      ✓
+                    </div>
+
+                    <h3>
+                      No security findings
+                    </h3>
+
+                    <p>
+                      This scan did not identify any
+                      security vulnerabilities.
                     </p>
 
-                    {/* META */}
+                  </div>
+                ) : (
+                  <div className="findings-list">
 
-                    <div className="project-meta">
+                    {findings.map((finding) => {
 
-                      {/* BRANCH */}
+                      const severity =
+                        String(
+                          finding.severity || "LOW"
+                        ).toUpperCase();
 
-                      <div className="meta-item">
+                      return (
+                        <article
+                          className="finding-card"
+                          key={finding.id}
+                        >
 
-                        <span>
-                          Branch
-                        </span>
+                          <div className="finding-header">
 
-                        <strong>
-                          {project.branch ||
-                            "main"}
-                        </strong>
+                            <div>
 
-                      </div>
+                              <span
+                                className={`finding-badge finding-${severity.toLowerCase()}`}
+                              >
+                                {severity}
+                              </span>
 
-                      {/* REPOSITORY */}
+                              <h3>
+                                {finding.title ||
+                                  "Security Finding"}
+                              </h3>
 
-                      <div className="meta-item">
+                            </div>
 
-                        <span>
-                          Repository
-                        </span>
+                            <span className="finding-rule">
+                              {finding.rule_id ||
+                                "SEC"}
+                            </span>
 
-                        {project.repository_url ? (
-                          <a
-                            href={
-                              project.repository_url
-                            }
-                            target="_blank"
-                            rel="noreferrer"
-                            className="repository-link"
-                            title={
-                              project.repository_url
-                            }
-                          >
-                            {
-                              project.repository_url
-                            }
-                          </a>
-                        ) : (
-                          <strong>
-                            Not connected
-                          </strong>
-                        )}
+                          </div>
 
-                      </div>
+                          {finding.description && (
+                            <p className="finding-description">
+                              {finding.description}
+                            </p>
+                          )}
 
-                    </div>
+                          <div className="finding-meta">
 
-                    {/* CARD ACTIONS */}
+                            <div>
+                              <span>
+                                File
+                              </span>
 
-                    <div className="project-card-actions">
+                              <strong>
+                                {finding.file_path ||
+                                  "Unknown"}
+                              </strong>
+                            </div>
 
-                      <Link
-                        to={`/projects/${project.id}`}
-                        className="secondary-button"
-                      >
-                        View Project
-                      </Link>
+                            <div>
+                              <span>
+                                Line
+                              </span>
 
-                      <button
-                        type="button"
-                        className="danger-button"
-                        onClick={() =>
-                          handleDeleteProject(
-                            project.id
-                          )
-                        }
-                        disabled={
-                          deletingId ===
-                          project.id
-                        }
-                      >
-                        {deletingId ===
-                        project.id
-                          ? "Deleting..."
-                          : "Delete"}
-                      </button>
+                              <strong>
+                                {finding.line_number ||
+                                  "—"}
+                              </strong>
+                            </div>
 
-                    </div>
+                            <div>
+                              <span>
+                                Project
+                              </span>
 
-                  </article>
-                );
-              }
-            )}
+                              <strong>
+                                {report.scan
+                                  ?.project_name ||
+                                  "Unknown"}
+                              </strong>
+                            </div>
 
-          </div>
+                          </div>
+
+                          {finding.evidence && (
+                            <div className="finding-detail">
+
+                              <span>
+                                Evidence
+                              </span>
+
+                              <code>
+                                {finding.evidence}
+                              </code>
+
+                            </div>
+                          )}
+
+                          {finding.recommendation && (
+                            <div className="finding-detail">
+
+                              <span>
+                                Recommendation
+                              </span>
+
+                              <p>
+                                {finding.recommendation}
+                              </p>
+
+                            </div>
+                          )}
+
+                        </article>
+                      );
+                    })}
+
+                  </div>
+                )}
+
+              </section>
+
+              {/* =================================================
+                  SCAN INFORMATION
+              ================================================= */}
+
+              <section className="report-card scan-information">
+
+                <div className="card-section-label">
+                  SCAN INFORMATION
+                </div>
+
+                <h2>Assessment Details</h2>
+
+                <div className="information-grid">
+
+                  <div>
+                    <span>Scan ID</span>
+                    <strong>
+                      #{report.scan?.id}
+                    </strong>
+                  </div>
+
+                  <div>
+                    <span>Project</span>
+                    <strong>
+                      {report.scan?.project_name ||
+                        "Unknown"}
+                    </strong>
+                  </div>
+
+                  <div>
+                    <span>Files Scanned</span>
+                    <strong>
+                      {report.scan?.files_scanned ||
+                        0}
+                    </strong>
+                  </div>
+
+                  <div>
+                    <span>Findings</span>
+                    <strong>
+                      {report.scan?.total_findings ||
+                        0}
+                    </strong>
+                  </div>
+
+                  <div>
+                    <span>Security Score</span>
+                    <strong>
+                      {report.scan?.security_score ??
+                        0}%
+                    </strong>
+                  </div>
+
+                  <div>
+                    <span>Status</span>
+                    <strong className="status-completed">
+                      Completed
+                    </strong>
+                  </div>
+
+                </div>
+
+              </section>
+
+            </>
+          )
         )}
 
       </div>
-
     </DashboardLayout>
   );
 }
 
-export default Projects;
+export default Reports;

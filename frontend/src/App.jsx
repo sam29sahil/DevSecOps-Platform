@@ -13,6 +13,7 @@ import ScanDetails from "./pages/ScanDetails";
 import Vulnerabilities from "./pages/Vulnerabilities";
 import Pipelines from "./pages/Pipelines";
 import Reports from "./pages/Reports";
+import Containers from "./pages/Containers";
 
 function App() {
   return (
@@ -62,6 +63,11 @@ function App() {
       <Route
         path="/pipelines"
         element={<Pipelines />}
+      />
+
+      <Route
+        path="/containers"
+        element={<Containers />}
       />
 
       <Route
