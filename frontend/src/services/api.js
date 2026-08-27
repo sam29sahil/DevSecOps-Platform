@@ -218,6 +218,22 @@ export async function restartContainer(containerId) {
     method: "POST",
   });
 }
+
+/* =========================================================
+   AZURE
+========================================================= */
+
+export async function getAzureHealth() {
+  return request("/azure/health");
+}
+
+export async function getAzureOverview() {
+  return request("/azure/overview");
+}
+
+export async function getAzureResources() {
+  return request("/azure/resources");
+}
 /* =========================================================
    HEALTH
 ========================================================= */

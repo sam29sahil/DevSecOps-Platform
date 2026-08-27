@@ -1,0 +1,635 @@
+/* =========================================================
+   AZURE ACTIVITY PAGE
+========================================================= */
+
+.azure-page {
+  width: 100%;
+  min-height: 100%;
+  padding: 42px 44px 60px;
+  color: #f5f7ff;
+  box-sizing: border-box;
+}
+
+/* =========================================================
+   HEADER
+========================================================= */
+
+.azure-page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 30px;
+  margin-bottom: 28px;
+}
+
+.azure-section-label {
+  color: #3f9cff;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 1.2px;
+  margin-bottom: 10px;
+}
+
+.azure-page-header h1 {
+  margin: 0;
+  font-size: 44px;
+  line-height: 1.1;
+  font-weight: 800;
+  letter-spacing: -1.4px;
+}
+
+.azure-page-header p {
+  margin: 14px 0 0;
+  max-width: 760px;
+  color: #7da4d2;
+  font-size: 17px;
+  line-height: 1.7;
+}
+
+/* =========================================================
+   REFRESH
+========================================================= */
+
+.azure-refresh-button {
+  min-width: 138px;
+  height: 54px;
+
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+
+  padding: 0 20px;
+
+  border: 1px solid #24548b;
+  border-radius: 10px;
+
+  background: #0c1c31;
+  color: #66b5ff;
+
+  font-size: 15px;
+  font-weight: 700;
+
+  cursor: pointer;
+
+  transition:
+    background 0.2s ease,
+    border-color 0.2s ease,
+    transform 0.2s ease;
+}
+
+.azure-refresh-button:hover:not(:disabled) {
+  background: #112944;
+  border-color: #357ac0;
+  transform: translateY(-1px);
+}
+
+.azure-refresh-button:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.azure-spin {
+  animation: azure-spin 1s linear infinite;
+}
+
+@keyframes azure-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* =========================================================
+   CONNECTION ALERT
+========================================================= */
+
+.azure-connection-alert {
+  min-height: 108px;
+  box-sizing: border-box;
+
+  display: flex;
+  align-items: center;
+  gap: 25px;
+
+  padding: 20px 23px;
+
+  margin-bottom: 25px;
+
+  border: 1px solid #173a64;
+  border-radius: 11px;
+
+  background:
+    linear-gradient(
+      135deg,
+      rgba(13, 31, 54, 0.98),
+      rgba(7, 20, 37, 0.98)
+    );
+}
+
+.azure-alert-icon {
+  width: 61px;
+  height: 61px;
+  flex: 0 0 61px;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  border-radius: 12px;
+
+  background: rgba(255, 70, 80, 0.14);
+  color: #ff646c;
+}
+
+.azure-success-icon {
+  background: rgba(39, 220, 136, 0.13);
+  color: #38df94;
+}
+
+.azure-alert-content {
+  flex: 1;
+
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.azure-alert-content strong {
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.azure-alert-content span {
+  color: #7ea3cc;
+  font-size: 14px;
+}
+
+.azure-connection-status {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+
+  min-width: 225px;
+}
+
+.azure-status-icon {
+  width: 47px;
+  height: 47px;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  border: 1px solid #173a64;
+  border-radius: 10px;
+
+  color: #c7d8ee;
+}
+
+.azure-connection-status div:last-child {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.azure-connection-status span {
+  color: #7f9aba;
+  font-size: 12px;
+  letter-spacing: 0.6px;
+}
+
+.azure-connection-status strong {
+  font-size: 15px;
+}
+
+.azure-disconnected {
+  color: #ff4d55;
+}
+
+.azure-connected {
+  color: #32dc91;
+}
+
+.azure-connection-status small {
+  color: #6b89aa;
+  font-size: 11px;
+  letter-spacing: 1px;
+}
+
+/* =========================================================
+   SUMMARY
+========================================================= */
+
+.azure-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 21px;
+  margin-bottom: 26px;
+}
+
+.azure-summary-card {
+  min-height: 150px;
+  box-sizing: border-box;
+
+  display: flex;
+  align-items: center;
+  gap: 20px;
+
+  padding: 22px;
+
+  border: 1px solid #1c4169;
+  border-radius: 12px;
+
+  background:
+    linear-gradient(
+      145deg,
+      #0d2038,
+      #091a2f
+    );
+
+  transition:
+    transform 0.2s ease,
+    border-color 0.2s ease;
+}
+
+.azure-summary-card:hover {
+  transform: translateY(-2px);
+  border-color: #285783;
+}
+
+.azure-summary-icon {
+  width: 61px;
+  height: 61px;
+  flex: 0 0 61px;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  border-radius: 12px;
+}
+
+.azure-summary-icon.blue {
+  color: #4ba6ff;
+  background: rgba(38, 126, 255, 0.14);
+}
+
+.azure-summary-icon.green {
+  color: #31e49b;
+  background: rgba(19, 211, 143, 0.13);
+}
+
+.azure-summary-icon.purple {
+  color: #a978ff;
+  background: rgba(123, 76, 255, 0.16);
+}
+
+.azure-summary-icon.orange {
+  color: #ffad35;
+  background: rgba(255, 156, 30, 0.14);
+}
+
+.azure-summary-content {
+  min-width: 0;
+
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.azure-summary-content span {
+  color: #a7c1df;
+  font-size: 14px;
+}
+
+.azure-summary-content strong {
+  color: #f6f8ff;
+  font-size: 21px;
+  font-weight: 800;
+
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.azure-summary-content small {
+  color: #668bb5;
+  font-size: 12px;
+}
+
+/* =========================================================
+   PANELS
+========================================================= */
+
+.azure-panel {
+  margin-bottom: 25px;
+
+  border: 1px solid #173b65;
+  border-radius: 12px;
+
+  background:
+    linear-gradient(
+      145deg,
+      #0b1d34,
+      #08182b
+    );
+
+  overflow: hidden;
+}
+
+.azure-panel-header {
+  padding: 24px 27px 21px;
+
+  border-bottom: 1px solid #163553;
+}
+
+.azure-panel-header h2 {
+  margin: 0;
+
+  color: #f6f8ff;
+  font-size: 24px;
+  font-weight: 800;
+}
+
+.azure-panel-header p {
+  margin: 9px 0 0;
+
+  color: #7097c2;
+  font-size: 14px;
+}
+
+/* =========================================================
+   ACCOUNT DETAILS
+========================================================= */
+
+.azure-account-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 25px;
+
+  padding: 27px;
+}
+
+.azure-account-item {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+
+  min-width: 0;
+}
+
+.azure-account-item span {
+  color: #7192b5;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.9px;
+}
+
+.azure-account-item strong {
+  color: #dce8f7;
+  font-size: 15px;
+
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* =========================================================
+   RESOURCE INVENTORY
+========================================================= */
+
+.azure-resource-panel {
+  min-height: 330px;
+}
+
+.azure-resource-panel .azure-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.azure-resource-count {
+  padding: 9px 15px;
+
+  border: 1px solid #204b78;
+  border-radius: 8px;
+
+  background: #0d2744;
+  color: #5eb1ff;
+
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.azure-empty {
+  min-height: 245px;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+
+  padding: 30px;
+  box-sizing: border-box;
+
+  text-align: center;
+}
+
+.azure-empty-icon {
+  width: 72px;
+  height: 72px;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  margin-bottom: 18px;
+
+  border: 1px solid #294b72;
+  border-radius: 50%;
+
+  background: rgba(74, 126, 183, 0.12);
+  color: #b8cce3;
+}
+
+.azure-empty h3 {
+  margin: 0 0 9px;
+
+  color: #e8eff8;
+  font-size: 18px;
+}
+
+.azure-empty p {
+  margin: 0 0 5px;
+
+  color: #7597b9;
+  font-size: 14px;
+}
+
+.azure-empty small {
+  color: #577897;
+  font-size: 13px;
+}
+
+/* =========================================================
+   RESOURCE LIST
+========================================================= */
+
+.azure-resource-list {
+  padding: 20px 27px 27px;
+
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.azure-resource-card {
+  min-height: 75px;
+
+  display: flex;
+  align-items: center;
+  gap: 17px;
+
+  padding: 13px 17px;
+  box-sizing: border-box;
+
+  border: 1px solid #173b62;
+  border-radius: 9px;
+
+  background: #0b1d32;
+}
+
+.azure-resource-icon {
+  width: 45px;
+  height: 45px;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  border-radius: 9px;
+
+  background: rgba(52, 151, 255, 0.13);
+  color: #51aaff;
+}
+
+.azure-resource-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.azure-resource-info h3 {
+  margin: 0 0 4px;
+
+  color: #edf4fc;
+  font-size: 15px;
+}
+
+.azure-resource-info span {
+  color: #668ab0;
+  font-size: 12px;
+}
+
+.azure-resource-location {
+  min-width: 130px;
+
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.azure-resource-location span {
+  color: #6687a8;
+  font-size: 10px;
+  letter-spacing: 0.8px;
+}
+
+.azure-resource-location strong {
+  color: #b8cce2;
+  font-size: 13px;
+}
+
+.azure-resource-status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+
+  color: #39db92;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.azure-resource-status i {
+  width: 7px;
+  height: 7px;
+
+  display: block;
+
+  border-radius: 50%;
+  background: #39db92;
+
+  box-shadow: 0 0 8px rgba(57, 219, 146, 0.65);
+}
+
+/* =========================================================
+   RESPONSIVE
+========================================================= */
+
+@media (max-width: 1200px) {
+  .azure-summary {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .azure-account-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 800px) {
+  .azure-page {
+    padding: 28px 20px 40px;
+  }
+
+  .azure-page-header {
+    flex-direction: column;
+  }
+
+  .azure-page-header h1 {
+    font-size: 36px;
+  }
+
+  .azure-refresh-button {
+    width: 100%;
+  }
+
+  .azure-connection-alert {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .azure-connection-status {
+    width: 100%;
+  }
+
+  .azure-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .azure-account-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .azure-resource-card {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .azure-resource-location {
+    width: 100%;
+    margin-left: 62px;
+  }
+
+  .azure-resource-status {
+    margin-left: 62px;
+  }
+}

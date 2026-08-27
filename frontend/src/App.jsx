@@ -14,6 +14,7 @@ import Vulnerabilities from "./pages/Vulnerabilities";
 import Pipelines from "./pages/Pipelines";
 import Reports from "./pages/Reports";
 import Containers from "./pages/Containers";
+import Azure from "./pages/AzureActivity";
 
 function App() {
   return (
@@ -68,6 +69,11 @@ function App() {
       <Route
         path="/containers"
         element={<Containers />}
+      />
+
+      <Route
+        path="/azure"
+        element={<Azure />}
       />
 
       <Route
