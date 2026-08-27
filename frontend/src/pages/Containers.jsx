@@ -1,13 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
-import { getContainers, startContainer, stopContainer, restartContainer } from "../services/api";
-import "./Containers.css";
+import { useEffect, useState } from "react";
+import { getContainers } from "../services/api";
 
 function Containers() {
   const [containers, setContainers] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [actionLoading, setActionLoading] = useState("");
   const [error, setError] = useState("");
-  const [filter, setFilter] = useState("ALL");
+  const [actionLoading, setActionLoading] = useState({});
 
   async function loadContainers() {
     try {
@@ -16,11 +14,7 @@ function Containers() {
 
       const data = await getContainers();
 
-      if (!data.success) {
-        throw new Error(data.error || "Failed to load containers.");
-      }
-
-      setContainers(Array.isArray(data.containers) ? data.containers : []);
+      setContainers(data.containers || []);
     } catch (err) {
       setError(err.message || "Failed to load containers.");
     } finally {
@@ -32,101 +26,104 @@ function Containers() {
     loadContainers();
   }, []);
 
-  const runningCount = useMemo(
-    () =>
-      containers.filter(
-        (container) =>
-          String(container.state || "").toLowerCase() === "running"
-      ).length,
-    [containers]
-  );
+  /*
+   * Start / Stop container
+   *
+   * The backend endpoints are called directly here so the
+   * existing getContainers() API remains untouched.
+   */
+  async function handleContainerAction(container, action) {
+    const containerId = container.id;
 
-  const stoppedCount = useMemo(
-    () =>
-      containers.filter(
-        (container) =>
-          String(container.state || "").toLowerCase() !== "running"
-      ).length,
-    [containers]
-  );
-
-  const filteredContainers = useMemo(() => {
-    if (filter === "ALL") {
-      return containers;
+    if (!containerId) {
+      setError("Container ID is missing.");
+      return;
     }
 
-    if (filter === "RUNNING") {
-      return containers.filter(
-        (container) =>
-          String(container.state || "").toLowerCase() === "running"
-      );
-    }
-
-    return containers.filter(
-      (container) =>
-        String(container.state || "").toLowerCase() !== "running"
-    );
-  }, [containers, filter]);
-
-  async function handleAction(container, action) {
-    const id = container.id;
+    const key = `${containerId}-${action}`;
 
     try {
-      setActionLoading(`${action}-${id}`);
+      setActionLoading((prev) => ({
+        ...prev,
+        [key]: true,
+      }));
+
       setError("");
 
-      let response;
+      const response = await fetch(
+        `http://127.0.0.1:5000/api/containers/${containerId}/${action}`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+        }
+      );
 
-      if (action === "start") {
-        response = await startContainer(id);
-      } else if (action === "stop") {
-        response = await stopContainer(id);
-      } else {
-        response = await restartContainer(id);
-      }
+      const data = await response.json();
 
-      if (!response.success) {
+      if (!response.ok || data.success === false) {
         throw new Error(
-          response.error || `Failed to ${action} container.`
+          data.message ||
+            data.error ||
+            `Failed to ${action} container.`
         );
       }
 
+      /*
+       * Reload container information after the action so
+       * state/status/ports are immediately updated.
+       */
       await loadContainers();
     } catch (err) {
-      setError(err.message || `Failed to ${action} container.`);
+      setError(
+        err.message ||
+          `Failed to ${action} container.`
+      );
     } finally {
-      setActionLoading("");
+      setActionLoading((prev) => ({
+        ...prev,
+        [key]: false,
+      }));
     }
   }
 
-  function getStateClass(state) {
-    return String(state || "unknown").toLowerCase() === "running"
-      ? "container-running"
-      : "container-stopped";
-  }
+  const running = containers.filter(
+    (container) =>
+      String(container.state || "").toLowerCase() === "running"
+  ).length;
 
-  function getStateLabel(state) {
-    return String(state || "unknown").toLowerCase() === "running"
-      ? "Running"
-      : "Stopped";
-  }
+  const stopped = containers.filter(
+    (container) =>
+      String(container.state || "").toLowerCase() !== "running"
+  ).length;
+
+  const uniqueImages = new Set(
+    containers
+      .map((container) => container.image)
+      .filter(Boolean)
+  ).size;
 
   return (
     <div className="containers-page">
 
-      {/* HEADER */}
-      <div className="containers-header">
+      {/* PAGE HEADER */}
+      <div className="containers-page-header">
         <div>
+          <div className="section-label">
+            CONTAINER SECURITY
+          </div>
+
           <h1>Containers</h1>
 
           <p>
-            Monitor and manage Docker containers running
-            across your DevSecOps environment.
+            Monitor Docker containers and their current
+            runtime status across your DevSecOps environment.
           </p>
         </div>
 
         <button
-          className="container-refresh-button"
+          className="containers-refresh-button"
           onClick={loadContainers}
           disabled={loading}
         >
@@ -136,115 +133,156 @@ function Containers() {
 
       {/* ERROR */}
       {error && (
-        <div className="container-error">
-          <span>⚠</span>
-          <p>{error}</p>
+        <div className="containers-error">
+          <strong>Unable to process container</strong>
+          <span>{error}</span>
         </div>
       )}
 
       {/* SUMMARY */}
-      <div className="container-summary">
+      <div className="containers-summary">
 
-        <button
-          className={`container-summary-card ${
-            filter === "ALL" ? "active" : ""
-          }`}
-          onClick={() => setFilter("ALL")}
-        >
-          <span>Total Containers</span>
-          <strong>{containers.length}</strong>
-          <small>Docker containers</small>
-        </button>
+        <div className="container-summary-card">
+          <div className="summary-icon blue">
+            ◇
+          </div>
 
-        <button
-          className={`container-summary-card running ${
-            filter === "RUNNING" ? "active" : ""
-          }`}
-          onClick={() => setFilter("RUNNING")}
-        >
-          <span>Running</span>
-          <strong>{runningCount}</strong>
-          <small>Active containers</small>
-        </button>
+          <div>
+            <span>Total Containers</span>
+            <strong>{containers.length}</strong>
+            <small>Docker containers</small>
+          </div>
+        </div>
 
-        <button
-          className={`container-summary-card stopped ${
-            filter === "STOPPED" ? "active" : ""
-          }`}
-          onClick={() => setFilter("STOPPED")}
-        >
-          <span>Stopped</span>
-          <strong>{stoppedCount}</strong>
-          <small>Inactive containers</small>
-        </button>
+        <div className="container-summary-card">
+          <div className="summary-icon green">
+            ✓
+          </div>
+
+          <div>
+            <span>Running</span>
+            <strong>{running}</strong>
+            <small>Active containers</small>
+          </div>
+        </div>
+
+        <div className="container-summary-card">
+          <div className="summary-icon orange">
+            ●
+          </div>
+
+          <div>
+            <span>Stopped</span>
+            <strong>{stopped}</strong>
+            <small>Inactive containers</small>
+          </div>
+        </div>
+
+        <div className="container-summary-card">
+          <div className="summary-icon purple">
+            ▣
+          </div>
+
+          <div>
+            <span>Images</span>
+            <strong>{uniqueImages}</strong>
+            <small>Unique images</small>
+          </div>
+        </div>
 
       </div>
 
-      {/* CONTAINER PANEL */}
+      {/* CONTAINER LIST */}
       <div className="containers-panel">
 
         <div className="containers-panel-header">
           <div>
-            <h2>Docker Containers</h2>
+            <div className="section-label">
+              DOCKER ENVIRONMENT
+            </div>
+
+            <h2>Container Status</h2>
 
             <p>
-              {filteredContainers.length} container
-              {filteredContainers.length === 1 ? "" : "s"} displayed
+              Current Docker container runtime information.
             </p>
           </div>
 
-          <select
-            value={filter}
-            onChange={(event) => setFilter(event.target.value)}
-            className="container-filter"
-          >
-            <option value="ALL">All Containers</option>
-            <option value="RUNNING">Running</option>
-            <option value="STOPPED">Stopped</option>
-          </select>
+          <div className="container-count">
+            {containers.length} container
+            {containers.length === 1 ? "" : "s"}
+          </div>
         </div>
 
         {loading ? (
-          <div className="container-loading">
-            <div className="container-spinner"></div>
-            <p>Loading Docker containers...</p>
+          <div className="containers-loading">
+            <div className="loading-spinner"></div>
+            <span>Loading containers...</span>
           </div>
-        ) : filteredContainers.length === 0 ? (
-          <div className="container-empty">
-            <div className="container-empty-icon">◫</div>
+        ) : containers.length === 0 ? (
+          <div className="containers-empty">
+            <div className="empty-container-icon">
+              ◇
+            </div>
 
             <h3>No containers found</h3>
 
             <p>
-              There are no Docker containers matching the
-              selected filter.
+              No Docker containers are currently available
+              on the configured Docker environment.
             </p>
+
+            <button
+              className="containers-refresh-button"
+              onClick={loadContainers}
+            >
+              ↻ Refresh
+            </button>
           </div>
         ) : (
           <div className="container-list">
 
-            {filteredContainers.map((container) => {
-              const running =
+            {containers.map((container) => {
+
+              const isRunning =
                 String(container.state || "").toLowerCase() ===
                 "running";
+
+              const startKey = `${container.id}-start`;
+              const stopKey = `${container.id}-stop`;
+
+              const starting =
+                actionLoading[startKey] === true;
+
+              const stopping =
+                actionLoading[stopKey] === true;
 
               return (
                 <div
                   className="container-card"
-                  key={container.id}
+                  key={container.id || container.name}
                 >
 
-                  {/* CARD HEADER */}
-                  <div className="container-card-header">
+                  {/* TOP */}
+                  <div className="container-card-top">
 
-                    <div className="container-title-area">
+                    <div className="container-name-area">
 
-                      <div className="container-icon">
-                        ◈
+                      <div
+                        className={`container-icon ${
+                          isRunning
+                            ? "running"
+                            : "stopped"
+                        }`}
+                      >
+                        ◇
                       </div>
 
                       <div>
-                        <h3>{container.name || "Unnamed Container"}</h3>
+                        <h3>
+                          {container.name ||
+                            "Unnamed Container"}
+                        </h3>
 
                         <span className="container-id">
                           ID: {container.id || "—"}
@@ -253,14 +291,68 @@ function Containers() {
 
                     </div>
 
-                    <span
-                      className={`container-state ${getStateClass(
-                        container.state
-                      )}`}
-                    >
-                      <span className="state-dot"></span>
-                      {getStateLabel(container.state)}
-                    </span>
+                    <div className="container-card-actions">
+
+                      {/* START */}
+                      {!isRunning && (
+                        <button
+                          type="button"
+                          className="container-action-button start"
+                          onClick={() =>
+                            handleContainerAction(
+                              container,
+                              "start"
+                            )
+                          }
+                          disabled={
+                            starting ||
+                            stopping
+                          }
+                        >
+                          {starting
+                            ? "Starting..."
+                            : "▶ Start"}
+                        </button>
+                      )}
+
+                      {/* STOP */}
+                      {isRunning && (
+                        <button
+                          type="button"
+                          className="container-action-button stop"
+                          onClick={() =>
+                            handleContainerAction(
+                              container,
+                              "stop"
+                            )
+                          }
+                          disabled={
+                            starting ||
+                            stopping
+                          }
+                        >
+                          {stopping
+                            ? "Stopping..."
+                            : "■ Stop"}
+                        </button>
+                      )}
+
+                      {/* STATUS */}
+                      <span
+                        className={`container-status ${
+                          isRunning
+                            ? "status-running"
+                            : "status-stopped"
+                        }`}
+                      >
+                        <i></i>
+
+                        {isRunning
+                          ? "RUNNING"
+                          : "STOPPED"}
+                      </span>
+
+                    </div>
 
                   </div>
 
@@ -269,88 +361,75 @@ function Containers() {
 
                     <div className="container-detail">
                       <span>IMAGE</span>
+
                       <strong>
-                        {container.image || "Unknown"}
+                        {container.image ||
+                          "Unknown"}
+                      </strong>
+                    </div>
+
+                    <div className="container-detail">
+                      <span>STATE</span>
+
+                      <strong>
+                        {container.state ||
+                          "Unknown"}
                       </strong>
                     </div>
 
                     <div className="container-detail">
                       <span>STATUS</span>
+
                       <strong>
-                        {container.status || "Unknown"}
+                        {container.status || "—"}
                       </strong>
                     </div>
 
                     <div className="container-detail">
                       <span>PORTS</span>
-                      <strong>
-                        {container.ports || "No published ports"}
-                      </strong>
-                    </div>
 
-                    <div className="container-detail">
-                      <span>CREATED</span>
                       <strong>
-                        {container.created || "—"}
+                        {container.ports || "None"}
                       </strong>
                     </div>
 
                   </div>
 
-                  {/* ACTIONS */}
-                  <div className="container-actions">
+                  {/* COMMAND */}
+                  <div className="container-command">
 
-                    {running ? (
-                      <>
-                        <button
-                          className="container-action stop"
-                          disabled={
-                            actionLoading ===
-                            `stop-${container.id}`
-                          }
-                          onClick={() =>
-                            handleAction(container, "stop")
-                          }
-                        >
-                          {actionLoading ===
-                          `stop-${container.id}`
-                            ? "Stopping..."
-                            : "■ Stop"}
-                        </button>
+                    <div className="command-label">
+                      COMMAND
+                    </div>
 
-                        <button
-                          className="container-action restart"
-                          disabled={
-                            actionLoading ===
-                            `restart-${container.id}`
-                          }
-                          onClick={() =>
-                            handleAction(container, "restart")
-                          }
-                        >
-                          {actionLoading ===
-                          `restart-${container.id}`
-                            ? "Restarting..."
-                            : "↻ Restart"}
-                        </button>
-                      </>
-                    ) : (
-                      <button
-                        className="container-action start"
-                        disabled={
-                          actionLoading ===
-                          `start-${container.id}`
-                        }
-                        onClick={() =>
-                          handleAction(container, "start")
-                        }
-                      >
-                        {actionLoading ===
-                        `start-${container.id}`
-                          ? "Starting..."
-                          : "▶ Start"}
-                      </button>
-                    )}
+                    <code>
+                      {container.command || "—"}
+                    </code>
+
+                  </div>
+
+                  {/* CREATED */}
+                  <div className="container-footer">
+
+                    <span>
+                      Created{" "}
+                      {container.created ||
+                        "Unknown"}
+                    </span>
+
+                    <span
+                      className={
+                        isRunning
+                          ? "health-good"
+                          : "health-warning"
+                      }
+                    >
+                      <i></i>
+
+                      {isRunning
+                        ? "Container active"
+                        : "Container inactive"}
+                    </span>
 
                   </div>
 
