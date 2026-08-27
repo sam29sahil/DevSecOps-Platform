@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getContainers } from "../services/api";
+import "./Containers.css";
 
 function Containers() {
   const [containers, setContainers] = useState([]);

@@ -193,6 +193,30 @@ def stop_container(container_id):
         "message": "Container stopped successfully.",
         "container_id": container_id,
     })
+    
+# ============================================================
+# RESTART CONTAINER
+# ============================================================
+
+@containers_bp.post("/<container_id>/restart")
+def restart_container(container_id):
+
+    _, error = run_docker_command([
+        "restart",
+        container_id,
+    ])
+
+    if error:
+        return jsonify({
+            "success": False,
+            "error": error,
+        }), 400
+
+    return jsonify({
+        "success": True,
+        "message": "Container restarted successfully.",
+        "container_id": container_id,
+    })    
 
 
 # ============================================================
