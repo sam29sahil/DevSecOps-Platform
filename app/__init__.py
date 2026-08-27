@@ -7,7 +7,17 @@ from flask_cors import CORS
 
 def create_app():
     app = Flask(__name__)
-    CORS(app, resources={r"/api/*": {"origins": "http://localhost:5173"}})
+    CORS(
+        app,
+        resources={
+            r"/api/*": {
+                "origins": [
+                    "http://localhost:5173",
+                    "https://devsecops-frontend.yellowmoss-529cfe62.centralindia.azurecontainerapps.io"
+                ]
+            }
+        }
+    )
 
     # Basic configuration
     app.config["JSON_SORT_KEYS"] = False
