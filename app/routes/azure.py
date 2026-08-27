@@ -1,6 +1,8 @@
 from flask import Blueprint, jsonify
 import subprocess
 import json
+import os
+import shutil
 
 
 azure_bp = Blueprint(
@@ -12,38 +14,53 @@ azure_bp = Blueprint(
 
 def run_azure_command(args):
     """
-    Execute an Azure CLI command and return parsed JSON.
-    Read-only commands only.
+    Execute Azure CLI on Windows or Linux/Docker
+    and return parsed JSON.
     """
 
     try:
+        # Automatically find Azure CLI:
+        # Windows -> az.cmd
+        # Linux/Docker -> /usr/bin/az
+        az_path = shutil.which("az")
+
+        if not az_path:
+            az_path = shutil.which("az.cmd")
+
+        if not az_path:
+            return None, "Azure CLI was not found."
+
         result = subprocess.run(
-            ["az"] + args,
+            [az_path] + args,
             capture_output=True,
             text=True,
             timeout=30,
             check=False,
+            env=os.environ.copy(),
         )
 
         if result.returncode != 0:
             return None, (
                 result.stderr.strip()
+                or result.stdout.strip()
                 or "Azure CLI command failed."
             )
 
-        if not result.stdout.strip():
+        output = result.stdout.strip()
+
+        if not output:
             return {}, None
 
-        try:
-            return json.loads(result.stdout), None
-        except json.JSONDecodeError:
-            return result.stdout.strip(), None
+        return json.loads(output), None
 
     except subprocess.TimeoutExpired:
         return None, "Azure CLI command timed out."
 
     except FileNotFoundError:
         return None, "Azure CLI was not found."
+
+    except json.JSONDecodeError:
+        return None, "Invalid Azure CLI response."
 
     except Exception as error:
         return None, str(error)

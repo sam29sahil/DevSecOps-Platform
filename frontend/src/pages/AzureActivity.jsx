@@ -10,6 +10,10 @@ import {
 } from "lucide-react";
 import "./AzureActivity.css";
 
+const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL ||
+  "http://127.0.0.1:5000/api";
+
 function AzureActivity() {
   const [loading, setLoading] = useState(false);
 
@@ -19,38 +23,147 @@ function AzureActivity() {
     resources: [],
     resourceTypes: [],
     environment: "AzureCloud",
-    error: "Azure CLI was not found.",
+    error: "",
   });
 
   async function loadAzure() {
     try {
       setLoading(true);
 
-      const response = await fetch(
-        "http://127.0.0.1:5000/api/azure"
+      /*
+       * First check Azure connection.
+       */
+      const healthResponse = await fetch(
+        `${API_BASE_URL}/azure/health`
       );
 
-      const data = await response.json();
+      let healthData = {};
 
-      if (!response.ok) {
+      try {
+        healthData = await healthResponse.json();
+      } catch {
         throw new Error(
-          data.error || "Unable to connect to Azure."
+          "Azure API returned an invalid response."
         );
       }
 
+      if (!healthResponse.ok) {
+        throw new Error(
+          healthData.error ||
+            "Unable to connect to Azure."
+        );
+      }
+
+      /*
+       * If Azure CLI/account is connected,
+       * get the complete Azure overview.
+       */
+      const overviewResponse = await fetch(
+        `${API_BASE_URL}/azure/overview`
+      );
+
+      let overviewData = {};
+
+      try {
+        overviewData = await overviewResponse.json();
+      } catch {
+        throw new Error(
+          "Azure overview returned an invalid response."
+        );
+      }
+
+      if (!overviewResponse.ok) {
+        throw new Error(
+          overviewData.error ||
+            "Unable to load Azure overview."
+        );
+      }
+
+      /*
+       * Backend structure:
+       *
+       * subscription: {
+       *   name,
+       *   id,
+       *   state,
+       *   tenant_id,
+       *   environment
+       * }
+       *
+       * resources: {
+       *   count,
+       *   items,
+       *   by_type
+       * }
+       */
+
+      const subscription =
+        overviewData.subscription || {};
+
+      const resourcesData =
+        overviewData.resources || {};
+
+      const resources = Array.isArray(
+        resourcesData.items
+      )
+        ? resourcesData.items
+        : [];
+
+      const resourceTypes =
+        resourcesData.by_type
+          ? Object.keys(resourcesData.by_type)
+          : [];
+
       setAzure({
-        connected: data.connected ?? true,
-        subscription: data.subscription ?? null,
-        resources: data.resources ?? [],
-        resourceTypes: data.resource_types ?? [],
-        environment: data.environment || "AzureCloud",
-        error: data.error || "",
+        connected:
+          overviewData.connected ??
+          healthData.connected ??
+          true,
+
+        subscription: {
+          name:
+            subscription.name ||
+            healthData.subscription ||
+            "Unknown",
+
+          id:
+            subscription.id || "—",
+
+          state:
+            subscription.state ||
+            healthData.subscription_state ||
+            "—",
+
+          tenant_id:
+            subscription.tenant_id || "—",
+
+          environment:
+            subscription.environment ||
+            "AzureCloud",
+        },
+
+        resources,
+
+        resourceTypes,
+
+        environment:
+          subscription.environment ||
+          "AzureCloud",
+
+        error: "",
       });
     } catch (error) {
+      console.error(
+        "Azure connection error:",
+        error
+      );
+
       setAzure((previous) => ({
         ...previous,
         connected: false,
-        error: error.message || "Azure connection unavailable.",
+        error:
+          error.message ||
+          "Azure connection unavailable.",
       }));
     } finally {
       setLoading(false);
@@ -62,21 +175,28 @@ function AzureActivity() {
   }, []);
 
   const subscriptionName =
-    azure.subscription?.name || "Unknown";
+    azure.subscription?.name ||
+    "Unknown";
 
   const subscriptionId =
-    azure.subscription?.id || "—";
+    azure.subscription?.id ||
+    "—";
 
   const tenantId =
-    azure.subscription?.tenantId || "—";
+    azure.subscription?.tenant_id ||
+    "—";
 
   const status =
-    azure.subscription?.state || "—";
+    azure.subscription?.state ||
+    "—";
 
   return (
     <div className="azure-page">
 
-      {/* HEADER */}
+      {/* =====================================================
+          HEADER
+      ====================================================== */}
+
       <div className="azure-page-header">
 
         <div>
@@ -87,8 +207,9 @@ function AzureActivity() {
           <h1>Azure Activity</h1>
 
           <p>
-            Monitor your Azure subscription, infrastructure
-            resources, and cloud environment status.
+            Monitor your Azure subscription,
+            infrastructure resources, and cloud
+            environment status.
           </p>
         </div>
 
@@ -99,15 +220,24 @@ function AzureActivity() {
         >
           <RefreshCw
             size={18}
-            className={loading ? "azure-spin" : ""}
+            className={
+              loading
+                ? "azure-spin"
+                : ""
+            }
           />
 
-          {loading ? "Refreshing..." : "Refresh"}
+          {loading
+            ? "Refreshing..."
+            : "Refresh"}
         </button>
 
       </div>
 
-      {/* CONNECTION */}
+      {/* =====================================================
+          CONNECTION ERROR
+      ====================================================== */}
+
       {!azure.connected && (
         <div className="azure-connection-alert">
 
@@ -116,13 +246,16 @@ function AzureActivity() {
           </div>
 
           <div className="azure-alert-content">
+
             <strong>
               Azure connection unavailable
             </strong>
 
             <span>
-              {azure.error || "Azure CLI was not found."}
+              {azure.error ||
+                "Azure connection unavailable."}
             </span>
+
           </div>
 
           <div className="azure-connection-status">
@@ -132,13 +265,19 @@ function AzureActivity() {
             </div>
 
             <div>
-              <span>AZURE CONNECTION</span>
+
+              <span>
+                AZURE CONNECTION
+              </span>
 
               <strong className="azure-disconnected">
                 Disconnected
               </strong>
 
-              <small>OFFLINE</small>
+              <small>
+                OFFLINE
+              </small>
+
             </div>
 
           </div>
@@ -146,7 +285,10 @@ function AzureActivity() {
         </div>
       )}
 
-      {/* CONNECTED */}
+      {/* =====================================================
+          CONNECTED
+      ====================================================== */}
+
       {azure.connected && (
         <div className="azure-connection-alert azure-connected-alert">
 
@@ -155,6 +297,7 @@ function AzureActivity() {
           </div>
 
           <div className="azure-alert-content">
+
             <strong>
               Azure connection established
             </strong>
@@ -162,6 +305,7 @@ function AzureActivity() {
             <span>
               Azure subscription information is available.
             </span>
+
           </div>
 
           <div className="azure-connection-status">
@@ -171,13 +315,19 @@ function AzureActivity() {
             </div>
 
             <div>
-              <span>AZURE CONNECTION</span>
+
+              <span>
+                AZURE CONNECTION
+              </span>
 
               <strong className="azure-connected">
                 Connected
               </strong>
 
-              <small>ONLINE</small>
+              <small>
+                ONLINE
+              </small>
+
             </div>
 
           </div>
@@ -185,10 +335,14 @@ function AzureActivity() {
         </div>
       )}
 
-      {/* SUMMARY */}
+      {/* =====================================================
+          SUMMARY
+      ====================================================== */}
+
       <div className="azure-summary">
 
         {/* SUBSCRIPTION */}
+
         <div className="azure-summary-card">
 
           <div className="azure-summary-icon blue">
@@ -196,7 +350,10 @@ function AzureActivity() {
           </div>
 
           <div className="azure-summary-content">
-            <span>Subscription</span>
+
+            <span>
+              Subscription
+            </span>
 
             <strong>
               {subscriptionName}
@@ -205,11 +362,13 @@ function AzureActivity() {
             <small>
               {subscriptionId}
             </small>
+
           </div>
 
         </div>
 
         {/* RESOURCES */}
+
         <div className="azure-summary-card">
 
           <div className="azure-summary-icon green">
@@ -217,7 +376,10 @@ function AzureActivity() {
           </div>
 
           <div className="azure-summary-content">
-            <span>Resources</span>
+
+            <span>
+              Resources
+            </span>
 
             <strong>
               {azure.resources.length}
@@ -226,11 +388,13 @@ function AzureActivity() {
             <small>
               Azure resources
             </small>
+
           </div>
 
         </div>
 
         {/* RESOURCE TYPES */}
+
         <div className="azure-summary-card">
 
           <div className="azure-summary-icon purple">
@@ -238,7 +402,10 @@ function AzureActivity() {
           </div>
 
           <div className="azure-summary-content">
-            <span>Resource Types</span>
+
+            <span>
+              Resource Types
+            </span>
 
             <strong>
               {azure.resourceTypes.length}
@@ -247,11 +414,13 @@ function AzureActivity() {
             <small>
               Infrastructure categories
             </small>
+
           </div>
 
         </div>
 
         {/* ENVIRONMENT */}
+
         <div className="azure-summary-card">
 
           <div className="azure-summary-icon orange">
@@ -259,7 +428,10 @@ function AzureActivity() {
           </div>
 
           <div className="azure-summary-content">
-            <span>Environment</span>
+
+            <span>
+              Environment
+            </span>
 
             <strong>
               {azure.environment}
@@ -268,28 +440,36 @@ function AzureActivity() {
             <small>
               Cloud environment
             </small>
+
           </div>
 
         </div>
 
       </div>
 
-      {/* AZURE ENVIRONMENT */}
+      {/* =====================================================
+          AZURE ENVIRONMENT
+      ====================================================== */}
+
       <section className="azure-panel">
 
         <div className="azure-panel-header">
 
           <div>
+
             <div className="azure-section-label">
               SUBSCRIPTION
             </div>
 
-            <h2>Azure Environment</h2>
+            <h2>
+              Azure Environment
+            </h2>
 
             <p>
               Current Azure account and subscription
               information.
             </p>
+
           </div>
 
         </div>
@@ -297,50 +477,89 @@ function AzureActivity() {
         <div className="azure-account-grid">
 
           <div className="azure-account-item">
-            <span>SUBSCRIPTION NAME</span>
-            <strong>{subscriptionName}</strong>
+
+            <span>
+              SUBSCRIPTION NAME
+            </span>
+
+            <strong>
+              {subscriptionName}
+            </strong>
+
           </div>
 
           <div className="azure-account-item">
-            <span>SUBSCRIPTION ID</span>
-            <strong>{subscriptionId}</strong>
+
+            <span>
+              SUBSCRIPTION ID
+            </span>
+
+            <strong>
+              {subscriptionId}
+            </strong>
+
           </div>
 
           <div className="azure-account-item">
-            <span>TENANT ID</span>
-            <strong>{tenantId}</strong>
+
+            <span>
+              TENANT ID
+            </span>
+
+            <strong>
+              {tenantId}
+            </strong>
+
           </div>
 
           <div className="azure-account-item">
-            <span>STATUS</span>
-            <strong>{status}</strong>
+
+            <span>
+              STATUS
+            </span>
+
+            <strong>
+              {status}
+            </strong>
+
           </div>
 
         </div>
 
       </section>
 
-      {/* RESOURCE INVENTORY */}
+      {/* =====================================================
+          RESOURCE INVENTORY
+      ====================================================== */}
+
       <section className="azure-panel azure-resource-panel">
 
         <div className="azure-panel-header">
 
           <div>
+
             <div className="azure-section-label">
               RESOURCE INVENTORY
             </div>
 
-            <h2>Azure Resources</h2>
+            <h2>
+              Azure Resources
+            </h2>
 
             <p>
               Resources available in your Azure
               subscription.
             </p>
+
           </div>
 
           <div className="azure-resource-count">
+
             {azure.resources.length} resource
-            {azure.resources.length === 1 ? "" : "s"}
+            {azure.resources.length === 1
+              ? ""
+              : "s"}
+
           </div>
 
         </div>
@@ -358,13 +577,13 @@ function AzureActivity() {
             </h3>
 
             <p>
-              Your Azure subscription currently has no
-              resources available to display.
+              Your Azure subscription currently has
+              no resources available to display.
             </p>
 
             <small>
-              Resources will appear here after they are
-              created or deployed.
+              Resources will appear here after they
+              are created or deployed.
             </small>
 
           </div>
@@ -373,48 +592,61 @@ function AzureActivity() {
 
           <div className="azure-resource-list">
 
-            {azure.resources.map((resource, index) => (
+            {azure.resources.map(
+              (resource, index) => (
 
-              <div
-                className="azure-resource-card"
-                key={
-                  resource.id ||
-                  resource.name ||
-                  index
-                }
-              >
+                <div
+                  className="azure-resource-card"
+                  key={
+                    resource.id ||
+                    resource.name ||
+                    index
+                  }
+                >
 
-                <div className="azure-resource-icon">
-                  <Database size={22} />
+                  <div className="azure-resource-icon">
+                    <Database size={22} />
+                  </div>
+
+                  <div className="azure-resource-info">
+
+                    <h3>
+                      {resource.name ||
+                        "Unnamed Resource"}
+                    </h3>
+
+                    <span>
+                      {resource.type ||
+                        "Unknown type"}
+                    </span>
+
+                  </div>
+
+                  <div className="azure-resource-location">
+
+                    <span>
+                      LOCATION
+                    </span>
+
+                    <strong>
+                      {resource.location ||
+                        "—"}
+                    </strong>
+
+                  </div>
+
+                  <div className="azure-resource-status">
+
+                    <i></i>
+
+                    Available
+
+                  </div>
+
                 </div>
 
-                <div className="azure-resource-info">
-
-                  <h3>
-                    {resource.name || "Unnamed Resource"}
-                  </h3>
-
-                  <span>
-                    {resource.type || "Unknown type"}
-                  </span>
-
-                </div>
-
-                <div className="azure-resource-location">
-                  <span>LOCATION</span>
-                  <strong>
-                    {resource.location || "—"}
-                  </strong>
-                </div>
-
-                <div className="azure-resource-status">
-                  <i></i>
-                  Available
-                </div>
-
-              </div>
-
-            ))}
+              )
+            )}
 
           </div>
 
