@@ -14,6 +14,7 @@ import {
   startScan,
   deleteProject,
 } from "../services/api";
+import "./ProjectDetails.css";
 
 
 function ProjectDetails() {
