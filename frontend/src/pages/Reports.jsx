@@ -1,11 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
-import { getScans } from "../services/api";
+﻿import { useEffect, useMemo, useState } from "react";
+import { getScans, getReport } from "../services/api";
 import DashboardLayout from "../layouts/DashboardLayout";
 import "./Reports.css";
-
-const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL ||
-  "http://127.0.0.1:5000/api";
 
 function Reports() {
   const [scans, setScans] = useState([]);
@@ -75,25 +71,7 @@ function Reports() {
       setLoadingReport(true);
       setError("");
 
-      const response = await fetch(
-        `${API_BASE_URL}/reports/${scanId}`
-      );
-
-      let data = {};
-
-      try {
-        data = await response.json();
-      } catch {
-        data = {};
-      }
-
-      if (!response.ok) {
-        throw new Error(
-          data.error ||
-            data.message ||
-            `Failed to load report (${response.status})`
-        );
-      }
+      const data = await getReport(scanId);
 
       setReport(data.report || null);
     } catch (err) {
@@ -202,7 +180,7 @@ function Reports() {
               onClick={loadScans}
               disabled={loadingScans}
             >
-              ↻ Refresh
+              â†» Refresh
             </button>
 
             <button
@@ -210,7 +188,7 @@ function Reports() {
               onClick={printReport}
               disabled={!report}
             >
-              ↓ Print Report
+              â†“ Print Report
             </button>
 
           </div>
@@ -283,10 +261,10 @@ function Reports() {
                         key={scan.id}
                         value={scan.id}
                       >
-                        Scan #{scan.id} —{" "}
+                        Scan #{scan.id} â€”{" "}
                         {scan.project_name ||
                           `Project #${scan.project_id}`}{" "}
-                        — completed
+                        â€” completed
                       </option>
                     ))
                   )}
@@ -310,7 +288,7 @@ function Reports() {
             <section className="report-card empty-report">
 
               <div className="empty-report-icon">
-                ✓
+                âœ“
               </div>
 
               <h2>No completed scans</h2>
@@ -562,7 +540,7 @@ function Reports() {
                   <div className="no-findings">
 
                     <div className="no-findings-icon">
-                      ✓
+                      âœ“
                     </div>
 
                     <h3>
@@ -641,7 +619,7 @@ function Reports() {
 
                               <strong>
                                 {finding.line_number ||
-                                  "—"}
+                                  "â€”"}
                               </strong>
                             </div>
 

@@ -7,31 +7,39 @@ const API_BASE_URL =
 ========================================================= */
 
 async function request(endpoint, options = {}) {
-  const response = await fetch(`${API_BASE_URL}${endpoint}`, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers || {}),
-    },
-  });
-
-  let data = {};
+  const url = `${API_BASE_URL}${endpoint}`;
 
   try {
-    data = await response.json();
-  } catch {
-    data = {};
-  }
+    const response = await fetch(url, {
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...(options.headers || {}),
+      },
+    });
 
-  if (!response.ok) {
-    throw new Error(
-      data.error ||
-        data.message ||
-        `Request failed with status ${response.status}`
-    );
-  }
+    let data = {};
 
-  return data;
+    try {
+      data = await response.json();
+    } catch {
+      data = {};
+    }
+
+    if (!response.ok) {
+      throw new Error(
+        data?.error ||
+          data?.message ||
+          `Request failed with status ${response.status}`
+      );
+    }
+
+    return data;
+  } catch (error) {
+    console.error(`API request failed: ${url}`, error);
+
+    throw error;
+  }
 }
 
 /* =========================================================
