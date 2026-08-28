@@ -3,7 +3,9 @@ import { getScans } from "../services/api";
 import DashboardLayout from "../layouts/DashboardLayout";
 import "./Reports.css";
 
-const API_BASE_URL = "http://127.0.0.1:5000/api";
+const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL ||
+  "http://127.0.0.1:5000/api";
 
 function Reports() {
   const [scans, setScans] = useState([]);
