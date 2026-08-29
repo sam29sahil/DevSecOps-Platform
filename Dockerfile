@@ -2,25 +2,60 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# System dependencies
+# ============================================================
+# SYSTEM DEPENDENCIES
+# ============================================================
+
 RUN apt-get update && apt-get install -y \
     curl \
     ca-certificates \
     gnupg \
     lsb-release \
+    git \
+    docker.io \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Azure CLI
+
+# ============================================================
+# INSTALL AZURE CLI
+# ============================================================
+
 RUN curl -sL https://aka.ms/InstallAzureCLIDeb | bash
 
-# Copy requirements
+
+# ============================================================
+# PYTHON DEPENDENCIES
+# ============================================================
+
 COPY requirements.txt .
 
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application
+
+# ============================================================
+# APPLICATION
+# ============================================================
+
 COPY . .
+
+
+# ============================================================
+# ENVIRONMENT
+# ============================================================
+
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
+
+# ============================================================
+# PORT
+# ============================================================
 
 EXPOSE 5000
 
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "run:app"]
+
+# ============================================================
+# START APPLICATION
+# ============================================================
+
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--timeout", "300", "run:app"]

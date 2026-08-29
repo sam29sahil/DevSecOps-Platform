@@ -194,6 +194,39 @@ export async function runPipeline(pipelineId) {
     }
   );
 }
+
+export async function getPipelineRuns(pipelineId) {
+  const response = await fetch(
+    `${API_BASE_URL}/pipelines/${pipelineId}/runs`
+  );
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(
+      data.error || "Failed to load pipeline runs."
+    );
+  }
+
+  return data;
+}
+
+
+export async function getPipelineRun(runId) {
+  const response = await fetch(
+    `${API_BASE_URL}/pipelines/runs/${runId}`
+  );
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(
+      data.error || "Failed to load pipeline run."
+    );
+  }
+
+  return data;
+}
 /* =========================================================
    REPORTS
 ========================================================= */
