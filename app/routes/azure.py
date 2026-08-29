@@ -26,6 +26,11 @@ AZURE_SUBSCRIPTION_ID = os.getenv(
     "ef50c11e-d07b-45e1-bd21-65d08c73c3cd",
 )
 
+AZURE_TENANT_ID = os.getenv(
+    "AZURE_TENANT_ID",
+    "d9771191-1dae-4263-8e20-518671ad0a12",
+)
+
 
 # ============================================================
 # AZURE CLIENT
@@ -39,8 +44,7 @@ def get_azure_clients():
         DefaultAzureCredential can use Azure CLI login.
 
     Azure Container Apps:
-        DefaultAzureCredential uses the Container App's
-        managed identity.
+        DefaultAzureCredential can use managed identity.
     """
 
     credential = DefaultAzureCredential()
@@ -50,7 +54,11 @@ def get_azure_clients():
         AZURE_SUBSCRIPTION_ID,
     )
 
-    return credential, AZURE_SUBSCRIPTION_ID, resource_client
+    return (
+        credential,
+        AZURE_SUBSCRIPTION_ID,
+        resource_client,
+    )
 
 
 # ============================================================
@@ -77,28 +85,29 @@ def azure_health():
 
     try:
 
-        credential, subscription_id, resource_client = (
+        _, subscription_id, resource_client = (
             get_azure_clients()
         )
-
-        # Force an authenticated Azure API request.
-        # This verifies that the managed identity / credential
-        # actually has access to Azure resources.
 
         resources = resource_client.resources.list(
             filter=f"resourceGroup eq '{RESOURCE_GROUP}'"
         )
 
-        # Consume one result if available.
+        # Force Azure API request
         next(iter(resources), None)
 
         return jsonify({
             "success": True,
             "connected": True,
             "status": "connected",
+
             "subscription": "Azure subscription 1",
+
             "subscription_id": subscription_id,
+
             "subscription_state": "Enabled",
+
+            "tenant_id": AZURE_TENANT_ID,
         })
 
     except Exception as error:
@@ -134,6 +143,10 @@ def azure_overview():
                 serialize_resource(resource)
             )
 
+        # --------------------------------------------------------
+        # RESOURCE SUMMARY
+        # --------------------------------------------------------
+
         resource_summary = {}
 
         for resource in resources:
@@ -148,51 +161,6 @@ def azure_overview():
             )
 
         # --------------------------------------------------------
-        # GET TENANT ID
-        # --------------------------------------------------------
-
-        tenant_id = os.getenv("AZURE_TENANT_ID")
-
-        # If AZURE_TENANT_ID is not configured, obtain it
-        # from the currently authenticated Azure CLI account.
-        if not tenant_id:
-
-            try:
-
-                result = subprocess.run(
-                    [
-                        "az",
-                        "account",
-                        "show",
-                        "--query",
-                        "tenantId",
-                        "-o",
-                        "tsv",
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=15,
-                    check=False,
-                )
-
-                if result.returncode == 0:
-
-                    tenant_id = (
-                        result.stdout.strip()
-                        or None
-                    )
-
-            except (
-                subprocess.TimeoutExpired,
-                FileNotFoundError,
-                Exception,
-            ):
-
-                tenant_id = None
-
-        tenant_id = tenant_id or "—"
-
-        # --------------------------------------------------------
         # RESPONSE
         # --------------------------------------------------------
 
@@ -204,15 +172,21 @@ def azure_overview():
 
             "subscription": {
                 "name": "Azure subscription 1",
+
                 "id": subscription_id,
+
                 "state": "Enabled",
-                "tenant_id": tenant_id,
+
+                "tenant_id": AZURE_TENANT_ID,
+
                 "environment": "AzureCloud",
             },
 
             "resources": {
                 "count": len(resources),
+
                 "items": resources,
+
                 "by_type": resource_summary,
             },
 
@@ -235,6 +209,8 @@ def azure_overview():
             },
 
         }), 503
+
+
 # ============================================================
 # AZURE RESOURCES
 # ============================================================
@@ -259,15 +235,23 @@ def azure_resources():
             )
 
         return jsonify({
+
             "success": True,
+
             "count": len(resources),
+
             "resources": resources,
+
         })
 
     except Exception as error:
 
         return jsonify({
+
             "success": False,
+
             "resources": [],
+
             "error": str(error),
+
         }), 503
