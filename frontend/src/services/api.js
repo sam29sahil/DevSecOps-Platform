@@ -202,11 +202,15 @@ export async function getReport(scanId) {
   return request(`/reports/${scanId}`);
 }
 /* =========================================================
-   CONTAINERS
+   CONTAINERS / DOCKER
 ========================================================= */
 
 export async function getContainers() {
   return request("/containers");
+}
+
+export async function getContainer(containerId) {
+  return request(`/containers/${containerId}`);
 }
 
 export async function startContainer(containerId) {
@@ -227,6 +231,19 @@ export async function restartContainer(containerId) {
   });
 }
 
+export async function removeContainer(containerId) {
+  return request(`/containers/${containerId}`, {
+    method: "DELETE",
+  });
+}
+
+export async function getContainerLogs(containerId) {
+  return request(`/containers/${containerId}/logs`);
+}
+
+export async function getContainerStats(containerId) {
+  return request(`/containers/${containerId}/stats`);
+}
 /* =========================================================
    AZURE
 ========================================================= */
@@ -248,4 +265,16 @@ export async function getAzureResources() {
 
 export async function getHealth() {
   return request("/health");
+}
+
+/* =========================================================
+   API BASE URL
+========================================================= */
+
+/*
+  Useful when debugging frontend/backend connection.
+*/
+
+export function getApiBaseUrl() {
+  return API_BASE_URL;
 }
