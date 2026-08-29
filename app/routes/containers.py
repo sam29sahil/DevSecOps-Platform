@@ -11,9 +11,7 @@ containers_bp = Blueprint(
 
 
 def run_docker_command(args):
-    """
-    Execute a Docker CLI command and return parsed JSON.
-    """
+    """Run a local Docker CLI command."""
 
     try:
         result = subprocess.run(
@@ -25,7 +23,10 @@ def run_docker_command(args):
         )
 
         if result.returncode != 0:
-            return None, result.stderr.strip() or "Docker command failed."
+            return None, (
+                result.stderr.strip()
+                or "Docker command failed."
+            )
 
         return result.stdout.strip(), None
 
@@ -45,9 +46,6 @@ def run_docker_command(args):
 
 @containers_bp.get("")
 def list_containers():
-    """
-    Return Docker containers, including stopped containers.
-    """
 
     output, error = run_docker_command([
         "ps",
@@ -66,10 +64,19 @@ def list_containers():
     containers = []
 
     if output:
+
         for line in output.splitlines():
 
             try:
                 item = json.loads(line)
+
+                status = item.get("Status", "")
+
+                state = (
+                    "running"
+                    if status.lower().startswith("up")
+                    else "stopped"
+                )
 
                 containers.append({
                     "id": item.get("ID", ""),
@@ -77,13 +84,9 @@ def list_containers():
                     "image": item.get("Image", ""),
                     "command": item.get("Command", ""),
                     "created": item.get("CreatedAt", ""),
-                    "status": item.get("Status", ""),
+                    "status": status,
                     "ports": item.get("Ports", ""),
-                    "state": (
-                        "running"
-                        if item.get("Status", "").lower().startswith("up")
-                        else "stopped"
-                    ),
+                    "state": state,
                 })
 
             except json.JSONDecodeError:
@@ -125,6 +128,7 @@ def container_details(container_id):
         }), 404
 
     try:
+
         details = json.loads(output)
 
         if not details:
@@ -139,6 +143,7 @@ def container_details(container_id):
         })
 
     except json.JSONDecodeError:
+
         return jsonify({
             "success": False,
             "error": "Invalid Docker response.",
@@ -161,6 +166,7 @@ def start_container(container_id):
         return jsonify({
             "success": False,
             "error": error,
+            "container_id": container_id,
         }), 400
 
     return jsonify({
@@ -186,6 +192,7 @@ def stop_container(container_id):
         return jsonify({
             "success": False,
             "error": error,
+            "container_id": container_id,
         }), 400
 
     return jsonify({
@@ -193,7 +200,8 @@ def stop_container(container_id):
         "message": "Container stopped successfully.",
         "container_id": container_id,
     })
-    
+
+
 # ============================================================
 # RESTART CONTAINER
 # ============================================================
@@ -210,13 +218,14 @@ def restart_container(container_id):
         return jsonify({
             "success": False,
             "error": error,
+            "container_id": container_id,
         }), 400
 
     return jsonify({
         "success": True,
         "message": "Container restarted successfully.",
         "container_id": container_id,
-    })    
+    })
 
 
 # ============================================================
@@ -235,6 +244,7 @@ def remove_container(container_id):
         return jsonify({
             "success": False,
             "error": error,
+            "container_id": container_id,
         }), 400
 
     return jsonify({

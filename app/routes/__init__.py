@@ -1,5 +1,4 @@
 from .projects import projects_bp
-from .scans import scans_bp
 from .scans import scans_bp, vulnerabilities_bp
 from .pipelines import pipelines_bp
 from .reports import reports_bp
