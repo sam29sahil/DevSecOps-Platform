@@ -147,18 +147,66 @@ def azure_overview():
                 resource_summary.get(resource_type, 0) + 1
             )
 
+        # --------------------------------------------------------
+        # GET TENANT ID
+        # --------------------------------------------------------
+
+        tenant_id = os.getenv("AZURE_TENANT_ID")
+
+        # If AZURE_TENANT_ID is not configured, obtain it
+        # from the currently authenticated Azure CLI account.
+        if not tenant_id:
+
+            try:
+
+                result = subprocess.run(
+                    [
+                        "az",
+                        "account",
+                        "show",
+                        "--query",
+                        "tenantId",
+                        "-o",
+                        "tsv",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    check=False,
+                )
+
+                if result.returncode == 0:
+
+                    tenant_id = (
+                        result.stdout.strip()
+                        or None
+                    )
+
+            except (
+                subprocess.TimeoutExpired,
+                FileNotFoundError,
+                Exception,
+            ):
+
+                tenant_id = None
+
+        tenant_id = tenant_id or "—"
+
+        # --------------------------------------------------------
+        # RESPONSE
+        # --------------------------------------------------------
+
         return jsonify({
+
             "success": True,
+
             "connected": True,
 
             "subscription": {
                 "name": "Azure subscription 1",
                 "id": subscription_id,
                 "state": "Enabled",
-                "tenant_id": (
-                    os.getenv("AZURE_TENANT_ID")
-                    or "—"
-                ),
+                "tenant_id": tenant_id,
                 "environment": "AzureCloud",
             },
 
@@ -167,22 +215,26 @@ def azure_overview():
                 "items": resources,
                 "by_type": resource_summary,
             },
+
         })
 
     except Exception as error:
 
         return jsonify({
+
             "success": False,
+
             "connected": False,
+
             "error": str(error),
+
             "resources": {
                 "count": 0,
                 "items": [],
                 "by_type": {},
             },
+
         }), 503
-
-
 # ============================================================
 # AZURE RESOURCES
 # ============================================================

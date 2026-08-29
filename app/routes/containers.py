@@ -252,3 +252,80 @@ def remove_container(container_id):
         "message": "Container removed successfully.",
         "container_id": container_id,
     })
+    
+# ============================================================
+# CONTAINER LOGS
+# ============================================================
+
+@containers_bp.get("/<container_id>/logs")
+def container_logs(container_id):
+
+    output, error = run_docker_command([
+        "logs",
+        "--tail",
+        "200",
+        container_id,
+    ])
+
+    if error:
+        return jsonify({
+            "success": False,
+            "error": error,
+            "container_id": container_id,
+            "logs": "",
+        }), 404
+
+    return jsonify({
+        "success": True,
+        "container_id": container_id,
+        "logs": output or "",
+    })
+
+
+# ============================================================
+# CONTAINER STATS
+# ============================================================
+
+@containers_bp.get("/<container_id>/stats")
+def container_stats(container_id):
+
+    output, error = run_docker_command([
+        "stats",
+        "--no-stream",
+        "--format",
+        "{{json .}}",
+        container_id,
+    ])
+
+    if error:
+        return jsonify({
+            "success": False,
+            "error": error,
+            "container_id": container_id,
+        }), 404
+
+    try:
+
+        stats = json.loads(output)
+
+        return jsonify({
+            "success": True,
+            "container_id": container_id,
+            "stats": {
+                "name": stats.get("Name", ""),
+                "cpu_percent": stats.get("CPUPerc", ""),
+                "memory_usage": stats.get("MemUsage", ""),
+                "memory_percent": stats.get("MemPerc", ""),
+                "network_io": stats.get("NetIO", ""),
+                "block_io": stats.get("BlockIO", ""),
+                "pids": stats.get("PIDs", ""),
+            },
+        })
+
+    except json.JSONDecodeError:
+
+        return jsonify({
+            "success": False,
+            "error": "Invalid Docker stats response.",
+            "container_id": container_id,
+        }), 500    
