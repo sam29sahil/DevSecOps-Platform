@@ -17,7 +17,6 @@ from app.models import (
     get_project,
     get_projects,
     update_scan,
-    get_db,
 )
 
 from app.scanners.code_scanner import CodeScanner
@@ -35,339 +34,19 @@ pipelines_bp = Blueprint(
 
 
 # ============================================================
-# PIPELINE STORAGE
+# IN-MEMORY STORAGE
 #
-# Pipelines and runs are persisted in SQLite.
+# Pipelines and runs are currently stored in memory.
+# This keeps the current project architecture compatible.
+# Database persistence can be added later.
 # ============================================================
 
-def _json_load(value, default):
-    try:
-        if not value:
-            return default
-        return json.loads(value)
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return default
+pipelines = []
+pipeline_runs = []
 
+_next_pipeline_id = 1
+_next_run_id = 1
 
-def _json_dump(value):
-    return json.dumps(
-        value if value is not None else [],
-        ensure_ascii=False,
-    )
-
-
-def pipeline_row_to_dict(row):
-    """Convert a SQLite pipeline row into the API structure."""
-
-    if row is None:
-        return None
-
-    pipeline = dict(row)
-
-    pipeline["fail_on_high"] = bool(
-        pipeline.get("fail_on_high")
-    )
-
-    pipeline["docker_enabled"] = bool(
-        pipeline.get("docker_enabled")
-    )
-
-    pipeline["registry_enabled"] = bool(
-        pipeline.get("registry_enabled")
-    )
-
-    pipeline["deployment_enabled"] = bool(
-        pipeline.get("deployment_enabled")
-    )
-
-    pipeline["stages"] = _json_load(
-        pipeline.pop("stages_json", "[]"),
-        [],
-    )
-
-    return pipeline
-
-
-def run_row_to_dict(row):
-    """Convert a SQLite pipeline run row into the API structure."""
-
-    if row is None:
-        return None
-
-    run = dict(row)
-
-    run["stages"] = _json_load(
-        run.pop("stages_json", "[]"),
-        [],
-    )
-
-    run["scan"] = _json_load(
-        run.pop("scan_json", None),
-        None,
-    )
-
-    run["findings"] = _json_load(
-        run.pop("findings_json", "[]"),
-        [],
-    )
-
-    run["quality_gate"] = _json_load(
-        run.pop("quality_gate_json", None),
-        None,
-    )
-
-    return run
-
-
-def get_pipeline(pipeline_id):
-    """Return one persisted pipeline."""
-
-    db = get_db()
-
-    row = db.execute(
-        """
-        SELECT *
-        FROM pipelines
-        WHERE id = ?
-        """,
-        (pipeline_id,),
-    ).fetchone()
-
-    db.close()
-
-    return pipeline_row_to_dict(row)
-
-
-def get_all_pipelines():
-    """Return all persisted pipelines."""
-
-    db = get_db()
-
-    rows = db.execute(
-        """
-        SELECT *
-        FROM pipelines
-        ORDER BY id DESC
-        """
-    ).fetchall()
-
-    db.close()
-
-    return [
-        pipeline_row_to_dict(row)
-        for row in rows
-    ]
-
-
-def save_pipeline(pipeline):
-    """Insert or update a pipeline."""
-
-    db = get_db()
-
-    db.execute(
-        """
-        INSERT INTO pipelines (
-            id,
-            name,
-            description,
-            branch,
-            repository_url,
-            project_id,
-            status,
-            created_at,
-            updated_at,
-            last_run,
-            last_run_id,
-            last_scan_id,
-            last_scan_status,
-            last_security_score,
-            last_files_scanned,
-            last_findings,
-            last_error,
-            quality_gate_score,
-            fail_on_high,
-            docker_enabled,
-            registry_enabled,
-            deployment_enabled,
-            stages_json
-        )
-        VALUES (
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-            ?, ?, ?, ?, ?, ?, ?
-        )
-        ON CONFLICT(id) DO UPDATE SET
-            name = excluded.name,
-            description = excluded.description,
-            branch = excluded.branch,
-            repository_url = excluded.repository_url,
-            project_id = excluded.project_id,
-            status = excluded.status,
-            updated_at = excluded.updated_at,
-            last_run = excluded.last_run,
-            last_run_id = excluded.last_run_id,
-            last_scan_id = excluded.last_scan_id,
-            last_scan_status = excluded.last_scan_status,
-            last_security_score = excluded.last_security_score,
-            last_files_scanned = excluded.last_files_scanned,
-            last_findings = excluded.last_findings,
-            last_error = excluded.last_error,
-            quality_gate_score = excluded.quality_gate_score,
-            fail_on_high = excluded.fail_on_high,
-            docker_enabled = excluded.docker_enabled,
-            registry_enabled = excluded.registry_enabled,
-            deployment_enabled = excluded.deployment_enabled,
-            stages_json = excluded.stages_json
-        """,
-        (
-            pipeline["id"],
-            pipeline["name"],
-            pipeline.get("description", ""),
-            pipeline.get("branch", "main"),
-            pipeline.get("repository_url", ""),
-            pipeline.get("project_id"),
-            pipeline.get("status", "pending"),
-            pipeline.get("created_at"),
-            pipeline.get("updated_at"),
-            pipeline.get("last_run"),
-            pipeline.get("last_run_id"),
-            pipeline.get("last_scan_id"),
-            pipeline.get("last_scan_status"),
-            pipeline.get("last_security_score"),
-            pipeline.get("last_files_scanned", 0),
-            pipeline.get("last_findings", 0),
-            pipeline.get("last_error"),
-            pipeline.get("quality_gate_score", 70),
-            int(bool(pipeline.get("fail_on_high", True))),
-            int(bool(pipeline.get("docker_enabled", True))),
-            int(bool(pipeline.get("registry_enabled", False))),
-            int(bool(pipeline.get("deployment_enabled", False))),
-            _json_dump(pipeline.get("stages", [])),
-        ),
-    )
-
-    db.commit()
-    db.close()
-
-    return get_pipeline(
-        pipeline["id"]
-    )
-
-
-def save_pipeline_run(run):
-    """Insert or update a persisted pipeline run."""
-
-    db = get_db()
-
-    db.execute(
-        """
-        INSERT INTO pipeline_runs (
-            id,
-            pipeline_id,
-            pipeline_name,
-            status,
-            started_at,
-            completed_at,
-            repository_url,
-            branch,
-            workspace,
-            stages_json,
-            scan_json,
-            findings_json,
-            security_score,
-            quality_gate_json,
-            error
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-            pipeline_id = excluded.pipeline_id,
-            pipeline_name = excluded.pipeline_name,
-            status = excluded.status,
-            started_at = excluded.started_at,
-            completed_at = excluded.completed_at,
-            repository_url = excluded.repository_url,
-            branch = excluded.branch,
-            workspace = excluded.workspace,
-            stages_json = excluded.stages_json,
-            scan_json = excluded.scan_json,
-            findings_json = excluded.findings_json,
-            security_score = excluded.security_score,
-            quality_gate_json = excluded.quality_gate_json,
-            error = excluded.error
-        """,
-        (
-            run["id"],
-            run["pipeline_id"],
-            run.get("pipeline_name"),
-            run.get("status", "running"),
-            run.get("started_at"),
-            run.get("completed_at"),
-            run.get("repository_url", ""),
-            run.get("branch", "main"),
-            run.get("workspace"),
-            _json_dump(run.get("stages", [])),
-            json.dumps(run.get("scan"), ensure_ascii=False)
-                if run.get("scan") is not None
-                else None,
-            _json_dump(run.get("findings", [])),
-            run.get("security_score"),
-            json.dumps(
-                run.get("quality_gate"),
-                ensure_ascii=False,
-            )
-            if run.get("quality_gate") is not None
-            else None,
-            run.get("error"),
-        ),
-    )
-
-    db.commit()
-    db.close()
-
-    return get_pipeline_run(run["id"])
-    
-    
-
-
-def get_pipeline_run(run_id):
-    """Return one persisted pipeline run."""
-
-    db = get_db()
-
-    row = db.execute(
-        """
-        SELECT *
-        FROM pipeline_runs
-        WHERE id = ?
-        """,
-        (run_id,),
-    ).fetchone()
-
-    db.close()
-
-    return run_row_to_dict(row)
-
-
-def get_pipeline_runs(pipeline_id):
-    """Return persisted runs for a pipeline."""
-
-    db = get_db()
-
-    rows = db.execute(
-        """
-        SELECT *
-        FROM pipeline_runs
-        WHERE pipeline_id = ?
-        ORDER BY id DESC
-        """,
-        (pipeline_id,),
-    ).fetchall()
-
-    db.close()
-
-    return [
-        run_row_to_dict(row)
-        for row in rows
-    ]
 
 # ============================================================
 # PIPELINE STAGES
@@ -438,12 +117,25 @@ def safe_int(value, default=None):
 
 
 def find_pipeline(pipeline_id):
-    return get_pipeline(pipeline_id)
+    return next(
+        (
+            pipeline
+            for pipeline in pipelines
+            if pipeline["id"] == pipeline_id
+        ),
+        None,
+    )
 
 
 def find_run(run_id):
-    return get_pipeline_run(run_id)
-
+    return next(
+        (
+            run
+            for run in pipeline_runs
+            if run["id"] == run_id
+        ),
+        None,
+    )
 
 
 def create_pipeline_record(
@@ -458,85 +150,61 @@ def create_pipeline_record(
     registry_enabled=False,
     deployment_enabled=False,
 ):
+    global _next_pipeline_id
+
     now = utc_now()
 
-    db = get_db()
+    pipeline = {
+        "id": _next_pipeline_id,
+        "name": name,
+        "description": description,
+        "branch": branch,
+        "repository_url": repository_url,
+        "project_id": project_id,
 
-    cursor = db.execute(
-        """
-        INSERT INTO pipelines (
-            name,
-            description,
-            branch,
-            repository_url,
-            project_id,
-            status,
-            created_at,
-            updated_at,
-            last_run,
-            last_run_id,
-            last_scan_id,
-            last_scan_status,
-            last_security_score,
-            last_files_scanned,
-            last_findings,
-            last_error,
-            quality_gate_score,
-            fail_on_high,
-            docker_enabled,
-            registry_enabled,
-            deployment_enabled,
-            stages_json
-        )
-        VALUES (
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-            ?, ?, ?, ?, ?, ?, ?
-        )
-        """,
-        (
-            name,
-            description,
-            branch,
-            repository_url,
-            project_id,
-            "pending",
-            now,
-            now,
-            None,
-            None,
-            None,
-            None,
-            None,
-            0,
-            0,
-            None,
-            quality_gate_score,
-            int(bool(fail_on_high)),
-            int(bool(docker_enabled)),
-            int(bool(registry_enabled)),
-            int(bool(deployment_enabled)),
-            _json_dump([
-                {
-                    **stage,
-                    "status": "pending",
-                    "started_at": None,
-                    "completed_at": None,
-                    "duration_ms": 0,
-                    "message": "",
-                    "details": {},
-                    "error": None,
-                }
-                for stage in DEFAULT_STAGES
-            ]),
-        ),
-    )
+        "status": "pending",
 
-    pipeline_id = cursor.lastrowid
+        "created_at": now,
+        "updated_at": now,
+        "last_run": None,
 
-    db.commit()
-    db.close()
+        "last_run_id": None,
 
-    return get_pipeline(pipeline_id)
+        "last_scan_id": None,
+        "last_scan_status": None,
+        "last_security_score": None,
+        "last_files_scanned": 0,
+        "last_findings": 0,
+
+        "last_error": None,
+
+        "quality_gate_score": quality_gate_score,
+        "fail_on_high": bool(fail_on_high),
+
+        "docker_enabled": bool(docker_enabled),
+        "registry_enabled": bool(registry_enabled),
+        "deployment_enabled": bool(deployment_enabled),
+
+        "stages": [
+            {
+                **stage,
+                "status": "pending",
+                "started_at": None,
+                "completed_at": None,
+                "duration_ms": 0,
+                "message": "",
+                "details": {},
+                "error": None,
+            }
+            for stage in DEFAULT_STAGES
+        ],
+    }
+
+    _next_pipeline_id += 1
+    pipelines.append(pipeline)
+
+    return pipeline
+
 
 def calculate_security_score(findings):
     deductions = {
@@ -1298,13 +966,12 @@ def deploy_azure_container(
 
 @pipelines_bp.get("")
 def list_pipelines():
-    persisted_pipelines = get_all_pipelines()
 
     return jsonify(
         {
             "success": True,
-            "count": len(persisted_pipelines),
-            "pipelines": persisted_pipelines,
+            "count": len(pipelines),
+            "pipelines": pipelines,
         }
     )
 
@@ -1655,7 +1322,11 @@ def update_pipeline(pipeline_id):
 @pipelines_bp.delete("/<int:pipeline_id>")
 def delete_pipeline(pipeline_id):
 
-    pipeline = find_pipeline(pipeline_id)
+    global pipelines
+
+    pipeline = find_pipeline(
+        pipeline_id
+    )
 
     if pipeline is None:
         return jsonify(
@@ -1665,25 +1336,21 @@ def delete_pipeline(pipeline_id):
             }
         ), 404
 
-    db = get_db()
-
-    db.execute(
-        """
-        DELETE FROM pipelines
-        WHERE id = ?
-        """,
-        (pipeline_id,),
-    )
-
-    db.commit()
-    db.close()
+    pipelines = [
+        item
+        for item in pipelines
+        if item["id"] != pipeline_id
+    ]
 
     return jsonify(
         {
             "success": True,
-            "message": "Pipeline deleted successfully.",
+            "message": (
+                "Pipeline deleted successfully."
+            ),
         }
     )
+
 
 # ============================================================
 # RUN PIPELINE
@@ -1693,6 +1360,8 @@ def delete_pipeline(pipeline_id):
     "/<int:pipeline_id>/run"
 )
 def run_pipeline(pipeline_id):
+
+    global _next_run_id
 
     pipeline = find_pipeline(
         pipeline_id
@@ -1716,8 +1385,6 @@ def run_pipeline(pipeline_id):
             "Pipeline is not connected to a project."
         )
         pipeline["updated_at"] = utc_now()
-        
-        pipeline = save_pipeline(pipeline)
 
         return jsonify(
             {
@@ -1745,7 +1412,7 @@ def run_pipeline(pipeline_id):
     started_at = utc_now()
 
     run = {
-        "id": None,
+        "id": _next_run_id,
         "pipeline_id": pipeline_id,
         "pipeline_name": pipeline["name"],
         "status": "running",
@@ -1788,6 +1455,8 @@ def run_pipeline(pipeline_id):
 
         "error": None,
     }
+
+    _next_run_id += 1
     pipeline_runs.append(run)
 
     pipeline["status"] = "running"
@@ -2429,9 +2098,6 @@ def run_pipeline(pipeline_id):
         pipeline["stages"] = run[
             "stages"
         ]
-        
-        save_pipeline_run(run)
-        save_pipeline(pipeline)
 
         return jsonify(
             {
@@ -2486,9 +2152,6 @@ def run_pipeline(pipeline_id):
         pipeline["stages"] = run[
             "stages"
         ]
-        
-        save_pipeline_run(run)
-        save_pipeline(pipeline)
 
         return jsonify(
             {
@@ -2539,7 +2202,11 @@ def pipeline_runs_list(pipeline_id):
             }
         ), 404
 
-    runs = get_pipeline_runs(pipeline_id)
+    runs = [
+        run
+        for run in pipeline_runs
+        if run["pipeline_id"] == pipeline_id
+    ]
 
     return jsonify(
         {

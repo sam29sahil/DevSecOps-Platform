@@ -114,6 +114,68 @@ def init_db():
                 ON DELETE CASCADE
         )
     """)
+    
+        # ========================================================
+    # PIPELINES
+    # ========================================================
+
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS pipelines (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            description TEXT DEFAULT '',
+            branch TEXT DEFAULT 'main',
+            repository_url TEXT DEFAULT '',
+            project_id INTEGER,
+            status TEXT DEFAULT 'pending',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            last_run TEXT,
+            last_run_id INTEGER,
+            last_scan_id INTEGER,
+            last_scan_status TEXT,
+            last_security_score INTEGER,
+            last_files_scanned INTEGER DEFAULT 0,
+            last_findings INTEGER DEFAULT 0,
+            last_error TEXT,
+            quality_gate_score INTEGER DEFAULT 70,
+            fail_on_high INTEGER DEFAULT 1,
+            docker_enabled INTEGER DEFAULT 1,
+            registry_enabled INTEGER DEFAULT 0,
+            deployment_enabled INTEGER DEFAULT 0,
+            stages_json TEXT DEFAULT '[]',
+            FOREIGN KEY (project_id)
+                REFERENCES projects(id)
+                ON DELETE SET NULL
+        )
+    """)
+
+    # ========================================================
+    # PIPELINE RUNS
+    # ========================================================
+
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS pipeline_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pipeline_id INTEGER NOT NULL,
+            pipeline_name TEXT,
+            status TEXT DEFAULT 'running',
+            started_at TEXT,
+            completed_at TEXT,
+            repository_url TEXT DEFAULT '',
+            branch TEXT DEFAULT 'main',
+            workspace TEXT,
+            stages_json TEXT DEFAULT '[]',
+            scan_json TEXT,
+            findings_json TEXT DEFAULT '[]',
+            security_score INTEGER,
+            quality_gate_json TEXT,
+            error TEXT,
+            FOREIGN KEY (pipeline_id)
+                REFERENCES pipelines(id)
+                ON DELETE CASCADE
+        )
+    """)
 
     db.commit()
     db.close()
