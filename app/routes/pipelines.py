@@ -193,7 +193,7 @@ def save_pipeline(pipeline):
         )
         VALUES (
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-            ?, ?, ?, ?, ?, ?, 
+            ?, ?, ?, ?, ?, ?, ?
         )
         ON CONFLICT(id) DO UPDATE SET
             name = excluded.name,
@@ -254,78 +254,109 @@ def save_pipeline(pipeline):
 
 
 def save_pipeline_run(run):
-    """Insert or update a persisted pipeline run."""
+    """Insert a new pipeline run or update an existing persisted run."""
 
     db = get_db()
 
-    db.execute(
-        """
-        INSERT INTO pipeline_runs (
-            id,
-            pipeline_id,
-            pipeline_name,
-            status,
-            started_at,
-            completed_at,
-            repository_url,
-            branch,
-            workspace,
-            stages_json,
-            scan_json,
-            findings_json,
-            security_score,
-            quality_gate_json,
-            error
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-            pipeline_id = excluded.pipeline_id,
-            pipeline_name = excluded.pipeline_name,
-            status = excluded.status,
-            started_at = excluded.started_at,
-            completed_at = excluded.completed_at,
-            repository_url = excluded.repository_url,
-            branch = excluded.branch,
-            workspace = excluded.workspace,
-            stages_json = excluded.stages_json,
-            scan_json = excluded.scan_json,
-            findings_json = excluded.findings_json,
-            security_score = excluded.security_score,
-            quality_gate_json = excluded.quality_gate_json,
-            error = excluded.error
-        """,
-        (
-            run["id"],
-            run["pipeline_id"],
-            run.get("pipeline_name"),
-            run.get("status", "running"),
-            run.get("started_at"),
-            run.get("completed_at"),
-            run.get("repository_url", ""),
-            run.get("branch", "main"),
-            run.get("workspace"),
-            _json_dump(run.get("stages", [])),
-            json.dumps(run.get("scan"), ensure_ascii=False)
+    if run.get("id") is None:
+        cursor = db.execute(
+            """
+            INSERT INTO pipeline_runs (
+                pipeline_id,
+                pipeline_name,
+                status,
+                started_at,
+                completed_at,
+                repository_url,
+                branch,
+                workspace,
+                stages_json,
+                scan_json,
+                findings_json,
+                security_score,
+                quality_gate_json,
+                error
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run["pipeline_id"],
+                run.get("pipeline_name"),
+                run.get("status", "running"),
+                run.get("started_at"),
+                run.get("completed_at"),
+                run.get("repository_url", ""),
+                run.get("branch", "main"),
+                run.get("workspace"),
+                _json_dump(run.get("stages", [])),
+                json.dumps(run.get("scan"), ensure_ascii=False)
                 if run.get("scan") is not None
                 else None,
-            _json_dump(run.get("findings", [])),
-            run.get("security_score"),
-            json.dumps(
-                run.get("quality_gate"),
-                ensure_ascii=False,
-            )
-            if run.get("quality_gate") is not None
-            else None,
-            run.get("error"),
-        ),
-    )
+                _json_dump(run.get("findings", [])),
+                run.get("security_score"),
+                json.dumps(
+                    run.get("quality_gate"),
+                    ensure_ascii=False,
+                )
+                if run.get("quality_gate") is not None
+                else None,
+                run.get("error"),
+            ),
+        )
+
+        run["id"] = cursor.lastrowid
+
+    else:
+        db.execute(
+            """
+            UPDATE pipeline_runs
+            SET
+                pipeline_id = ?,
+                pipeline_name = ?,
+                status = ?,
+                started_at = ?,
+                completed_at = ?,
+                repository_url = ?,
+                branch = ?,
+                workspace = ?,
+                stages_json = ?,
+                scan_json = ?,
+                findings_json = ?,
+                security_score = ?,
+                quality_gate_json = ?,
+                error = ?
+            WHERE id = ?
+            """,
+            (
+                run["pipeline_id"],
+                run.get("pipeline_name"),
+                run.get("status", "running"),
+                run.get("started_at"),
+                run.get("completed_at"),
+                run.get("repository_url", ""),
+                run.get("branch", "main"),
+                run.get("workspace"),
+                _json_dump(run.get("stages", [])),
+                json.dumps(run.get("scan"), ensure_ascii=False)
+                if run.get("scan") is not None
+                else None,
+                _json_dump(run.get("findings", [])),
+                run.get("security_score"),
+                json.dumps(
+                    run.get("quality_gate"),
+                    ensure_ascii=False,
+                )
+                if run.get("quality_gate") is not None
+                else None,
+                run.get("error"),
+                run["id"],
+            ),
+        )
 
     db.commit()
     db.close()
 
     return get_pipeline_run(run["id"])
-    
-    
 
 
 def get_pipeline_run(run_id):
@@ -1636,6 +1667,8 @@ def update_pipeline(pipeline_id):
         )
 
     pipeline["updated_at"] = utc_now()
+    
+    pipeline = save_pipeline(pipeline)
 
     return jsonify(
         {
@@ -1788,13 +1821,7 @@ def run_pipeline(pipeline_id):
 
         "error": None,
     }
-    run = create_pipeline_run_record(run)
-
-    if run is None:
-        return jsonify({
-            "success": False,
-            "error": "Failed to create pipeline run."
-        }), 500
+    run = save_pipeline_run(run)
 
     pipeline["status"] = "running"
     pipeline["last_run"] = started_at
@@ -2140,6 +2167,23 @@ def run_pipeline(pipeline_id):
                     details=docker_result,
                 )
 
+            elif docker_result["status"] == "skipped":
+                stage_finish(
+                    run,
+                    "docker_build",
+                    stage_timer,
+                    status="skipped",
+                    message=docker_result.get(
+                        "message",
+                        "Docker build skipped.",
+                    ),
+                    details=docker_result,
+                )
+                
+                # No Docker image means all downstream
+                # container stages must be skipped.
+                run["docker_image"] = None
+
             else:
                 error_message = docker_result.get(
                     "message",
@@ -2169,13 +2213,15 @@ def run_pipeline(pipeline_id):
                     "Docker build disabled for this pipeline."
                 ),
             )
+            
+            run["docker_image"] = None
 
 
         # ====================================================
         # STAGE 7 — CONTAINER SCAN
         # ====================================================
 
-        if pipeline["docker_enabled"]:
+        if pipeline["docker_enabled"] and run.get("docker_image"):            
             _, stage_timer = stage_start(
                 run,
                 "container_scan",
@@ -2184,16 +2230,26 @@ def run_pipeline(pipeline_id):
             container_result = scan_container_image(
                 run["docker_image"]
             )
-
+ 
             if container_result["status"] == "success":
-
                 stage_finish(
                     run,
                     "container_scan",
                     stage_timer,
                     status="success",
-                    message=(
-                        "Container security scan completed."
+                    message="Container security scan completed.",
+                    details=container_result,
+                )
+
+            elif container_result["status"] == "skipped":
+                stage_finish(
+                    run,
+                    "container_scan",
+                    stage_timer,
+                    status="skipped",
+                    message=container_result.get(
+                        "message",
+                        "Container scan skipped.",
                     ),
                     details=container_result,
                 )
@@ -2220,7 +2276,6 @@ def run_pipeline(pipeline_id):
                     "Container security scan failed: "
                     + error_message
                 )
-
         else:
             update_stage(
                 run,
@@ -2228,7 +2283,7 @@ def run_pipeline(pipeline_id):
                 "skipped",
                 message=(
                     "Container scan skipped because "
-                    "Docker build is disabled."
+                    "no Docker image was built."
                 ),
             )
 
