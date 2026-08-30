@@ -193,7 +193,7 @@ def save_pipeline(pipeline):
         )
         VALUES (
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-            ?, ?, ?, ?, ?, ?, ?
+            ?, ?, ?, ?, ?, ?, 
         )
         ON CONFLICT(id) DO UPDATE SET
             name = excluded.name,
@@ -488,13 +488,13 @@ def create_pipeline_record(
             deployment_enabled,
             stages_json
         )
-        VALUES (
+         VALUES (
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-            ?, ?, ?, ?, ?, ?, ?
-        )
+            ?, ?, ?, ?, ?, ?
+        )        
         """,
         (
-            name,
+            name,        
             description,
             branch,
             repository_url,
@@ -1788,7 +1788,13 @@ def run_pipeline(pipeline_id):
 
         "error": None,
     }
-    pipeline_runs.append(run)
+    run = create_pipeline_run_record(run)
+
+    if run is None:
+        return jsonify({
+            "success": False,
+            "error": "Failed to create pipeline run."
+        }), 500
 
     pipeline["status"] = "running"
     pipeline["last_run"] = started_at

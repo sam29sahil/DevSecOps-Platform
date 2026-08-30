@@ -8,7 +8,11 @@ from datetime import datetime
 # ============================================================
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-DATABASE_PATH = BASE_DIR / "devsecops.db"
+
+DATABASE_DIR = BASE_DIR / "data"
+DATABASE_DIR.mkdir(parents=True, exist_ok=True)
+
+DATABASE_PATH = DATABASE_DIR / "devsecops.db"
 
 
 def get_db():
