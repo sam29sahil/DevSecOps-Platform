@@ -685,7 +685,7 @@ def run_command(
 
     return {
         "returncode": completed.returncode,
-        "stdout": completed.stdout[-12000:],
+        "stdout": completed.stdout,
         "stderr": completed.stderr[-12000:],
     }
 
@@ -2225,37 +2225,60 @@ def run_pipeline(pipeline_id):
             
             run["docker_image"] = None
 
-
         # ====================================================
-        # STAGE 7 — CONTAINER SCAN
+        # STAGE 7 — CONTAINER SECURITY SCAN
         # ====================================================
 
-        if pipeline["docker_enabled"] and run.get("docker_image"):            
+        if pipeline["docker_enabled"] and run.get("docker_image"):
             _, stage_timer = stage_start(
                 run,
                 "container_scan",
             )
 
-            print(
-                "PIPELINE_SCAN_DEBUG:",
-                "image=", run["docker_image"],
-                "trivy=", is_trivy_available(),
-                "which=", shutil.which("trivy"),
-                "scan_func=", scan_container_image,
-                "scan_module=", scan_container_image.__module__,
-                flush=True,
-            )
+            image = run["docker_image"]
 
-            container_result = scan_container_image(            
-                run["docker_image"]
-            )
+            # Verify Trivy at runtime.
+            trivy_path = shutil.which("trivy")
 
-            print(
-                "PIPELINE_SCAN_RESULT:",
-                container_result,
-                flush=True,
-            )
- 
+            if not trivy_path:
+                container_result = {
+                    "status": "skipped",
+                    "message": "Trivy is not available in the pipeline runtime.",
+                }
+            else:
+                result = run_command(
+                    [
+                        trivy_path,
+                        "image",
+                        "--format",
+                        "json",
+                        image,
+                    ],
+                    timeout=900,
+                )
+
+                if result["returncode"] not in (0, 1):
+                    raise RuntimeError(
+                        result["stderr"]
+                        or result["stdout"]
+                        or "Container security scan failed."
+                    )
+
+                try:
+                    parsed = json.loads(result["stdout"])
+                except json.JSONDecodeError as error:
+                    raise RuntimeError(
+                        f"Unable to parse Trivy JSON output: {error}"
+                    )
+
+                container_result = {
+                    "status": "success",
+                    "image": image,
+                    "scanner": "trivy",
+                    "scanner_path": trivy_path,
+                    "result": parsed,
+                }
+
             if container_result["status"] == "success":
                 stage_finish(
                     run,
@@ -2272,10 +2295,7 @@ def run_pipeline(pipeline_id):
                     "container_scan",
                     stage_timer,
                     status="skipped",
-                    message=container_result.get(
-                        "message",
-                        "Container scan skipped.",
-                    ),
+                    message=container_result["message"],
                     details=container_result,
                 )
 
@@ -2290,8 +2310,7 @@ def run_pipeline(pipeline_id):
                     "container_scan",
                     stage_timer,
                     status="failed",
-                    message=
-                        "Container security scan failed.",
+                    message="Container security scan failed.",
                     details=container_result,
                     error=error_message,
                 )
@@ -2300,6 +2319,7 @@ def run_pipeline(pipeline_id):
                     "Container security scan failed: "
                     + error_message
                 )
+
         else:
             update_stage(
                 run,
@@ -2310,7 +2330,6 @@ def run_pipeline(pipeline_id):
                     "no Docker image was built."
                 ),
             )
-
 
         # ====================================================
         # STAGE 8 — REGISTRY PUSH
