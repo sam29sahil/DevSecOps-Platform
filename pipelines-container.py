@@ -1119,7 +1119,7 @@ def build_docker_image(
 
 def scan_container_image(image):
     print(
-        "### CONTAINER SCAN RUNTIME VERSION 2026-08-30 ###",
+        "CONTAINER_SCAN_DEBUG:",
         "image=", image,
         "trivy=", is_trivy_available(),
         "which=", shutil.which("trivy"),
@@ -1733,7 +1733,7 @@ def delete_pipeline(pipeline_id):
 @pipelines_bp.post(
     "/<int:pipeline_id>/run"
 )
-def run_pipeline(pipeline_id):            
+def run_pipeline(pipeline_id):
 
     pipeline = find_pipeline(
         pipeline_id
@@ -2236,24 +2236,8 @@ def run_pipeline(pipeline_id):
                 "container_scan",
             )
 
-            print(
-                "PIPELINE_SCAN_DEBUG:",
-                "image=", run["docker_image"],
-                "trivy=", is_trivy_available(),
-                "which=", shutil.which("trivy"),
-                "scan_func=", scan_container_image,
-                "scan_module=", scan_container_image.__module__,
-                flush=True,
-            )
-
-            container_result = scan_container_image(            
+            container_result = scan_container_image(
                 run["docker_image"]
-            )
-
-            print(
-                "PIPELINE_SCAN_RESULT:",
-                container_result,
-                flush=True,
             )
  
             if container_result["status"] == "success":

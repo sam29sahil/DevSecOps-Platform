@@ -31,7 +31,20 @@ COPY requirements.txt .
 
 RUN pip install --no-cache-dir -r requirements.txt
 
+# ============================================================
+# INSTALL TRIVY
+# ============================================================
 
+RUN apt-get update && apt-get install -y \
+    wget \
+    && wget -qO- https://aquasecurity.github.io/trivy-repo/deb/public.key \
+       | gpg --dearmor \
+       > /usr/share/keyrings/trivy.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" \
+       > /etc/apt/sources.list.d/trivy.list \
+    && apt-get update \
+    && apt-get install -y trivy \
+    && rm -rf /var/lib/apt/lists/*
 # ============================================================
 # APPLICATION
 # ============================================================
