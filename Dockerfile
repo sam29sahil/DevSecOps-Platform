@@ -58,6 +58,12 @@ COPY . .
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
+# Persist Trivy's vulnerability database in the application's data mount so a
+# container recreation does not force the next pipeline request to cold-start.
+ENV TRIVY_CACHE_DIR=/app/data/trivy-cache
+# Avoid the unreliable mirror for the Java index database used by full image
+# scans. This is Trivy's supported upstream OCI repository.
+ENV TRIVY_JAVA_DB_REPOSITORY=ghcr.io/aquasecurity/trivy-java-db:1
 
 
 # ============================================================
@@ -71,4 +77,7 @@ EXPOSE 5000
 # START APPLICATION
 # ============================================================
 
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "1", "--timeout", "300", "run:app"]
+# The container scan command allows up to 900 seconds for a cold Trivy DB
+# download and image scan. Leave a small margin so Gunicorn does not kill the
+# worker before the command can return its result.
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "1", "--timeout", "960", "run:app"]

@@ -1158,14 +1158,15 @@ def scan_container_image(image):
             or "Container scan failed."
         )
 
-    parsed = {}
-
     try:
         parsed = json.loads(
             result["stdout"]
         )
-    except Exception:
-        pass
+    except json.JSONDecodeError as error:
+        raise RuntimeError(
+            result["stderr"]
+            or f"Unable to parse Trivy JSON output: {error}"
+        )
 
     return {
         "status": "success",
@@ -2235,49 +2236,12 @@ def run_pipeline(pipeline_id):
                 "container_scan",
             )
 
-            image = run["docker_image"]
-
-            # Verify Trivy at runtime.
-            trivy_path = shutil.which("trivy")
-
-            if not trivy_path:
-                container_result = {
-                    "status": "skipped",
-                    "message": "Trivy is not available in the pipeline runtime.",
-                }
-            else:
-                result = run_command(
-                    [
-                        trivy_path,
-                        "image",
-                        "--format",
-                        "json",
-                        image,
-                    ],
-                    timeout=900,
-                )
-
-                if result["returncode"] not in (0, 1):
-                    raise RuntimeError(
-                        result["stderr"]
-                        or result["stdout"]
-                        or "Container security scan failed."
-                    )
-
-                try:
-                    parsed = json.loads(result["stdout"])
-                except json.JSONDecodeError as error:
-                    raise RuntimeError(
-                        f"Unable to parse Trivy JSON output: {error}"
-                    )
-
-                container_result = {
-                    "status": "success",
-                    "image": image,
-                    "scanner": "trivy",
-                    "scanner_path": trivy_path,
-                    "result": parsed,
-                }
+            # Keep the endpoint and direct scan API on one execution path.
+            # This prevents their Trivy availability checks and JSON handling
+            # from drifting apart.
+            container_result = scan_container_image(
+                run["docker_image"]
+            )
 
             if container_result["status"] == "success":
                 stage_finish(
