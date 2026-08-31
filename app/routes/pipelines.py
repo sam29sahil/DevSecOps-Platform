@@ -667,15 +667,22 @@ def run_command(
     cwd=None,
     timeout=300,
     env=None,
+    stdin_text=None,
 ):
     """
     Execute an external command safely and capture output.
+
+    ``stdin_text`` is written to the process' standard input and then closed.
+    Credentials must be passed this way rather than as arguments, because
+    argument vectors are visible to every process on the host and are also
+    captured into the persisted pipeline stage details.
     """
 
     completed = subprocess.run(
         command,
         cwd=cwd,
         env=env,
+        input=stdin_text,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -1145,14 +1152,28 @@ def scan_container_image(image):
         [
             "trivy",
             "image",
+            "--scanners",
+            "vuln",
             "--format",
             "json",
             image,
         ],
         timeout=900,
+        # This is a Python service image.  The only Java archive in its base
+        # tooling is gettext's /usr/share/java/libintl JAR, not application
+        # code.  Exclude that path so Trivy still scans OS and Python library
+        # vulnerabilities without cold-downloading the 915 MB Java index.
+        env={
+            **os.environ,
+            "TRIVY_SKIP_JAVA_DB_UPDATE": "true",
+            "TRIVY_SKIP_DIRS": "/usr/share/java",
+        },
     )
 
-    if result["returncode"] not in (0, 1):
+    # Trivy exits zero when it completed a normal vulnerability scan.  A
+    # non-zero status without an explicit --exit-code policy is a scanner
+    # failure, not a scan result, so do not mask it as success.
+    if result["returncode"] != 0:
         raise RuntimeError(
             result["stderr"]
             or "Container scan failed."
@@ -1183,6 +1204,17 @@ def push_registry_image(
     image,
     registry,
 ):
+    """
+    Push the built image to the configured container registry.
+
+    Authentication uses the pipeline's dedicated Azure service principal via
+    ``docker login --password-stdin``.  The Azure CLI is deliberately not
+    involved: a CLI user profile is an interactive credential and cannot be
+    refreshed non-interactively under Entra security defaults, and
+    ``az acr login`` would additionally require a writable CLI profile inside
+    the container.
+    """
+
     if not image:
         return {
             "status": "skipped",
@@ -1201,14 +1233,58 @@ def push_registry_image(
             "message": "Docker CLI unavailable.",
         }
 
-    target = (
-        registry.rstrip("/")
-        + "/"
-        + image.replace(
-            "devsecops-pipeline:",
-            "devsecops-pipeline:"
+    registry_host = registry.rstrip("/").strip()
+
+    if not registry_host.split(".", 1)[0].strip():
+        raise RuntimeError(
+            "Container registry hostname is invalid: "
+            + str(registry)
         )
+
+    client_id = os.getenv("AZURE_CLIENT_ID")
+    client_secret = os.getenv("AZURE_CLIENT_SECRET")
+
+    if not client_id or not client_secret:
+        raise RuntimeError(
+            "Registry push requires AZURE_CLIENT_ID and AZURE_CLIENT_SECRET "
+            "to be configured for the pipeline's service principal."
+        )
+
+    login_result = run_command(
+        [
+            "docker",
+            "login",
+            registry_host,
+            "--username",
+            client_id,
+            "--password-stdin",
+        ],
+        timeout=180,
+        stdin_text=client_secret,
     )
+
+    if login_result["returncode"] != 0:
+        details = (
+            login_result["stderr"]
+            or login_result["stdout"]
+            or "Container registry login failed."
+        )
+        raise RuntimeError(
+            "Service principal authentication failed for "
+            f"{registry_host}: {details.strip()}"
+        )
+
+    # The local build tag is "<repository>:<tag>".  Only the tag is carried
+    # over, so the registry repository can be configured independently of the
+    # name used for the local image.
+    local_tag = image.rsplit(":", 1)[-1]
+
+    repository = (
+        os.getenv("CONTAINER_REGISTRY_REPOSITORY")
+        or "devsecops-pipeline"
+    ).strip("/")
+
+    target = f"{registry_host}/{repository}:{local_tag}"
 
     tag_result = run_command(
         [
@@ -1256,12 +1332,23 @@ def deploy_azure_container(
     image,
 ):
     """
+    Update the dedicated Azure Container App deployment target.
+
     Deployment is deliberately opt-in.
 
     Required environment variables:
 
+        AZURE_SUBSCRIPTION_ID
         AZURE_RESOURCE_GROUP
         AZURE_CONTAINER_APP_NAME
+
+    Authentication uses the Azure SDK rather than the Azure CLI.  The
+    ``containerapp`` CLI command lives in an extension that is not present in
+    this image and cannot be installed non-interactively at request time, and
+    a CLI user profile is not a valid daemon credential under Entra security
+    defaults.  A service principal is used when its variables are present,
+    otherwise the ambient credential chain is used so the same code path keeps
+    working from a managed identity.
     """
 
     if not image:
@@ -1270,6 +1357,10 @@ def deploy_azure_container(
             "message": "No image available.",
         }
 
+    subscription_id = os.getenv(
+        "AZURE_SUBSCRIPTION_ID"
+    )
+
     resource_group = os.getenv(
         "AZURE_RESOURCE_GROUP"
     )
@@ -1277,6 +1368,14 @@ def deploy_azure_container(
     container_app = os.getenv(
         "AZURE_CONTAINER_APP_NAME"
     )
+
+    if not subscription_id:
+        return {
+            "status": "skipped",
+            "message": (
+                "AZURE_SUBSCRIPTION_ID is not configured."
+            ),
+        }
 
     if not resource_group:
         return {
@@ -1294,41 +1393,101 @@ def deploy_azure_container(
             ),
         }
 
-    if shutil.which("az") is None:
-        return {
-            "status": "skipped",
-            "message": (
-                "Azure CLI is not available."
-            ),
-        }
+    # Imported lazily so the Azure SDK is only loaded when a deployment is
+    # actually requested, keeping application start-up unaffected.
+    from azure.identity import (
+        ClientSecretCredential,
+        DefaultAzureCredential,
+    )
+    from azure.mgmt.appcontainers import ContainerAppsAPIClient
+    from azure.mgmt.appcontainers.models import ContainerApp
 
-    result = run_command(
-        [
-            "az",
-            "containerapp",
-            "update",
-            "--name",
-            container_app,
-            "--resource-group",
-            resource_group,
-            "--image",
-            image,
-        ],
-        timeout=900,
+    tenant_id = os.getenv("AZURE_TENANT_ID")
+    client_id = os.getenv("AZURE_CLIENT_ID")
+    client_secret = os.getenv("AZURE_CLIENT_SECRET")
+
+    if tenant_id and client_id and client_secret:
+        credential = ClientSecretCredential(
+            tenant_id=tenant_id,
+            client_id=client_id,
+            client_secret=client_secret,
+        )
+    else:
+        credential = DefaultAzureCredential()
+
+    client = ContainerAppsAPIClient(
+        credential,
+        subscription_id,
     )
 
-    if result["returncode"] != 0:
-        raise RuntimeError(
-            result["stderr"]
-            or result["stdout"]
-            or "Azure deployment failed."
+    try:
+        existing = client.container_apps.get(
+            resource_group,
+            container_app,
         )
+
+        containers = (
+            existing.template.containers
+            if existing.template
+            else None
+        )
+
+        if not containers:
+            raise RuntimeError(
+                "Container App "
+                f"{container_app} has no container definition to update."
+            )
+
+        # Only the image is changed.  The live template is round-tripped so
+        # scaling and volume settings are preserved.
+        containers[0].image = image
+
+        # The update is a PATCH, so anything left out of the payload keeps its
+        # current value.  Only the template is sent: echoing the whole resource
+        # back would re-submit ``managedEnvironmentId``, and ARM then re-checks
+        # the environment link and demands
+        # ``Microsoft.App/managedEnvironments/join/action``, which the
+        # deployment service principal is not granted.  Ingress and registry
+        # settings live in ``configuration`` and are preserved by omission.
+        patch = ContainerApp(
+            template=existing.template,
+        )
+
+        updated = client.container_apps.begin_update(
+            resource_group,
+            container_app,
+            patch,
+        ).result()
+
+    except Exception as error:
+        raise RuntimeError(
+            "Azure Container App deployment failed for "
+            f"{container_app}: {error}"
+        )
+
+    finally:
+        credential.close()
+
+    fqdn = None
+
+    if (
+        updated.configuration
+        and updated.configuration.ingress
+    ):
+        fqdn = updated.configuration.ingress.fqdn
 
     return {
         "status": "success",
         "container_app": container_app,
         "resource_group": resource_group,
         "image": image,
+        "revision": updated.latest_revision_name,
+        "provisioning_state": updated.provisioning_state,
+        "url": (
+            f"https://{fqdn}"
+            if fqdn
+            else None
+        ),
     }
 
 
@@ -2309,49 +2468,69 @@ def run_pipeline(pipeline_id):
                 "CONTAINER_REGISTRY"
             )
 
-            registry_result = push_registry_image(
-                run["docker_image"],
-                registry,
-            )
-
-            if registry_result["status"] == "success":
-
-                run["registry_image"] = (
-                    registry_result["image"]
-                )
-
+            if not registry:
                 stage_finish(
                     run,
                     "registry_push",
                     stage_timer,
-                    status="success",
+                    status="skipped",
                     message=(
-                        "Container image pushed "
-                        "to registry."
+                        "Registry push skipped because "
+                        "CONTAINER_REGISTRY is not configured."
                     ),
-                    details=registry_result,
+                    details={
+                        "status": "skipped",
+                        "message": (
+                            "Registry push skipped because "
+                            "CONTAINER_REGISTRY is not configured."
+                        ),
+                    },
                 )
 
             else:
-                error_message = registry_result.get(
-                    "message",
-                    "Registry push failed.",
+                registry_result = push_registry_image(
+                    run["docker_image"],
+                    registry,
                 )
 
-                stage_finish(
-                    run,
-                    "registry_push",
-                    stage_timer,
-                    status="failed",
-                    message="Registry push failed.",
-                    details=registry_result,
-                    error=error_message,
-                )
+                if registry_result["status"] == "success":
 
-                raise RuntimeError(
-                    "Registry push failed: "
-                    + error_message
-                )
+                    run["registry_image"] = (
+                        registry_result["image"]
+                    )
+
+                    stage_finish(
+                        run,
+                        "registry_push",
+                        stage_timer,
+                        status="success",
+                        message=(
+                            "Container image pushed "
+                            "to registry."
+                        ),
+                        details=registry_result,
+                    )
+
+                else:
+                    error_message = registry_result.get(
+                        "message",
+                        "Registry push failed.",
+                    )
+
+                    stage_finish(
+                        run,
+                        "registry_push",
+                        stage_timer,
+                        status="failed",
+                        message="Registry push failed.",
+                        details=registry_result,
+                        error=error_message,
+                    )
+
+                    raise RuntimeError(
+                        "Registry push failed: "
+                        + error_message
+                    )
 
         else:
             update_stage(
@@ -2375,15 +2554,16 @@ def run_pipeline(pipeline_id):
                 "deployment",
             )
 
-            deploy_image = (
-                run.get("registry_image")
-                or run.get("docker_image")
-            )
+            # Only a registry image can be deployed.  Azure pulls the image
+            # itself, so a local-only build tag would fail at pull time with a
+            # far less obvious error.
+            deploy_image = run.get("registry_image")
 
             if not deploy_image:
                 error_message = (
-                    "No container image is available "
-                    "for deployment."
+                    "No registry image is available for deployment. "
+                    "Registry push must succeed before deployment, because "
+                    "Azure cannot pull a local-only Docker tag."
                 )
 
                 stage_finish(
