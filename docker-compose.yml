@@ -19,9 +19,3 @@ services:
 
       # The pipeline builds and scans images with the host Docker daemon.
       - /var/run/docker.sock:/var/run/docker.sock
-
-      # NOTE: the host Azure CLI profile is deliberately NOT mounted here.
-      # A Windows CLI profile is not readable by the Linux container, and a
-      # CLI user credential cannot be refreshed non-interactively under Entra
-      # security defaults.  Azure authentication uses the service principal
-      # configured in .env instead.

@@ -1,6 +1,6 @@
 # DevSecOps Platform
 
-A self-hosted DevSecOps platform that runs a complete security-gated delivery pipeline — source checkout, dependency inspection, secret detection, SAST, a policy quality gate, Docker build, Trivy container vulnerability scanning, Azure Container Registry push, and Azure Container Apps deployment — from a single Flask API with a React dashboard.
+A self-hosted DevSecOps platform that runs a complete security-gated delivery pipeline — source checkout, dependency inspection, secret detection, SAST, a policy quality gate, Docker build, and Trivy container vulnerability scanning — from a single Flask API with a React dashboard.
 
 The platform runs as a container on your own Docker host and drives the host Docker daemon to build and scan images. Every pipeline run is persisted to SQLite with per-stage status, timing, and structured results.
 
@@ -20,8 +20,6 @@ The platform runs as a container on your own Docker host and drives the host Doc
 - [DevSecOps Pipeline Stages](#devsecops-pipeline-stages)
 - [SAST Scanning](#sast-scanning)
 - [Trivy Vulnerability Scanning](#trivy-vulnerability-scanning)
-- [Azure Container Registry Push](#azure-container-registry-push)
-- [Azure Container Apps Deployment](#azure-container-apps-deployment)
 - [Health Checks](#health-checks)
 - [Security and Secret Handling](#security-and-secret-handling)
 - [API Reference](#api-reference)
@@ -51,14 +49,14 @@ A pipeline run is synchronous: `POST /api/pipelines/<id>/run` executes every sta
 ┌────────────────────────────────────────────────────────────────────┐
 │  React + Vite dashboard (frontend/)                                │
 │  Dashboard · Projects · Scans · Vulnerabilities · Pipelines ·      │
-│  Containers · Reports · Azure Activity                             │
+│  Containers · Reports                                             │
 └───────────────────────────────┬────────────────────────────────────┘
                                 │  REST / JSON  (VITE_API_BASE_URL)
 ┌───────────────────────────────▼────────────────────────────────────┐
 │  Flask API  (gunicorn, port 5000)                                  │
 │                                                                    │
 │  /api/projects   /api/scans      /api/vulnerabilities              │
-│  /api/pipelines  /api/reports    /api/containers   /api/azure      │
+│  /api/pipelines  /api/reports    /api/containers                  │
 │                                                                    │
 │  ┌──────────────────────────────────────────────────────────────┐  │
 │  │  Pipeline engine (app/routes/pipelines.py)                   │  │
@@ -67,24 +65,24 @@ A pipeline run is synchronous: `POST /api/pipelines/<id>/run` executes every sta
 │  └───────┬───────────────┬────────────────────┬─────────────────┘  │
 │          │               │                    │                    │
 │  ┌───────▼──────┐  ┌─────▼───────┐   ┌────────▼─────────┐          │
-│  │ CodeScanner  │  │ SQLite      │   │ azure-identity / │          │
-│  │ (SAST rules) │  │ data/       │   │ azure-mgmt-*     │          │
+│  │ CodeScanner  │  │ SQLite      │                              │
+│  │ (SAST rules) │  │ data/       │                              │
 │  └──────────────┘  │ devsecops.db│   └────────┬─────────┘          │
 │                    └─────────────┘            │                    │
 └──────────┬────────────────────────────────────┼────────────────────┘
            │ /var/run/docker.sock               │ Service principal
 ┌──────────▼──────────────┐        ┌────────────▼───────────────────┐
-│  Host Docker daemon     │        │  Azure                         │
-│  docker build / tag     │        │  · Container Registry (ACR)    │
-│  docker push            │───────▶│  · Container Apps (deploy)     │
-│  trivy image (in-image) │        │  · Resource Manager (read-only)│
+│  Host Docker daemon     │        │  Container Registry            │
+│  docker build / tag     │        │  Registry push                 │
+│  docker push            │───────▶│                               │
+│  trivy image (in-image) │        │                               │
 └─────────────────────────┘        └────────────────────────────────┘
 ```
 
 Two deliberate design decisions are worth calling out:
 
 - **The container drives the host Docker daemon.** `/var/run/docker.sock` is mounted into the platform container, so `docker build`, `docker tag`, and `docker push` execute against the host daemon rather than a nested one. The Docker CLI is installed inside the image; the daemon is not.
-- **Azure access uses a service principal, not a CLI profile.** The host Azure CLI profile is deliberately *not* mounted. A Windows CLI profile is unreadable by a Linux container, and an interactive CLI user credential cannot be refreshed non-interactively under Entra security defaults.
+- **AWS access uses a service principal, not a CLI profile.** The host AWS credentials profile is deliberately *not* mounted. A Windows CLI profile is unreadable by a Linux container, and an interactive CLI user credential cannot be refreshed non-interactively under Entra security defaults.
 
 ---
 
@@ -96,11 +94,11 @@ Two deliberate design decisions are worth calling out:
 - **Dependency manifest discovery** across Python, Node, Java, Go, and Rust ecosystems.
 - **Configurable quality gate** — minimum security score, zero-critical enforcement, and an optional fail-on-high policy.
 - **Trivy container image scanning** with a persisted vulnerability database cache.
-- **Azure Container Registry push** authenticated by service principal via `docker login --password-stdin`.
-- **Azure Container Apps deployment** via the Azure SDK, returning the new revision name, provisioning state, and public FQDN.
+- **Amazon ECR push** authenticated by service principal via `docker login --password-stdin`.
+- **AWS ECR integration** via the boto3, returning the new revision name, provisioning state, and public FQDN.
 - **Local container management** — list, inspect, start, stop, restart, remove containers, and read logs and stats.
-- **Azure resource visibility** — connection health, resource-group overview, and resource listing.
-- **React dashboard** covering projects, scan history, vulnerabilities, pipelines, containers, reports, and Azure activity.
+- **AWS resource visibility** — connection health, resource-group overview, and resource listing.
+- **React dashboard** covering projects, scan history, vulnerabilities, pipelines, containers, reports, and AWS Activity.
 
 ---
 
@@ -115,9 +113,9 @@ Two deliberate design decisions are worth calling out:
 | flask-cors | 6.0.5 |
 | gunicorn | 23.0.0 (1 worker, 960s timeout) |
 | SQLite | via the Python standard library `sqlite3` |
-| azure-identity | 1.25.3 |
-| azure-mgmt-resource | 26.0.0 |
-| azure-mgmt-appcontainers | 5.0.0 (unpinned in `requirements.txt`) |
+| AWS-identity | 1.25.3 |
+| AWS-mgmt-resource | 26.0.0 |
+| AWS-mgmt-appcontainers | 5.0.0 (unpinned in `requirements.txt`) |
 | python-dotenv | 1.2.3 |
 
 > `requirements.txt` also pins Flask-Login, Flask-Migrate, Flask-SQLAlchemy, and SQLAlchemy. The persistence layer in `app/models.py` currently uses raw `sqlite3`, so these are installed but not yet used by the API.
@@ -139,7 +137,7 @@ Two deliberate design decisions are worth calling out:
 | `git` | Repository checkout |
 | `docker-cli` | Build, tag, push, and container management against the host daemon |
 | `trivy` | Container image vulnerability scanning |
-| Azure CLI | Installed in the image; the pipeline itself authenticates through the Azure SDK |
+| AWS credentials | Installed in the image; the pipeline itself authenticates through the boto3 |
 
 ---
 
@@ -158,7 +156,7 @@ DevSecOps-Platform/
 │   │   ├── pipelines.py         # /api/pipelines       pipeline CRUD, execution, run history
 │   │   ├── reports.py           # /api/reports         severity report from a stored scan
 │   │   ├── containers.py        # /api/containers      local Docker container management
-│   │   └── azure.py             # /api/azure           Azure connectivity and resources
+│   │   └── AWS.py             # /api/AWS           AWS connectivity and resources
 │   ├── scanners/
 │   │   └── code_scanner.py      # CodeScanner — the SAST rule engine
 │   ├── static/
@@ -167,7 +165,7 @@ DevSecOps-Platform/
 │   ├── src/
 │   │   ├── pages/               # Dashboard, Projects, ProjectDetails, ScanHistory,
 │   │   │                        #   ScanDetails, Vulnerabilities, Pipelines, Containers,
-│   │   │                        #   Reports, AzureActivity
+│   │   │                        #   Reports, AWSActivity
 │   │   ├── components/          # DashboardLayout, Header, Sidebar, StatCard
 │   │   ├── layouts/
 │   │   ├── services/api.js      # REST client (VITE_API_BASE_URL)
@@ -178,7 +176,7 @@ DevSecOps-Platform/
 ├── data/
 │   ├── devsecops.db             # SQLite database (git-ignored)
 │   └── trivy-cache/             # Persisted Trivy vulnerability DB (git-ignored)
-├── Dockerfile                   # Platform image: Python + git + docker-cli + trivy + Azure CLI
+├── Dockerfile                   # Platform image: Python + git + docker-cli + trivy + AWS credentials
 ├── docker-compose.yml           # Service definition, port, env_file, volumes
 ├── requirements.txt
 ├── run.py                       # WSGI entrypoint (`run:app`)
@@ -198,12 +196,12 @@ DevSecOps-Platform/
 | Node.js 20+ | Only needed to run or build the frontend. |
 | Git | Required for the checkout stage. |
 | Trivy | Bundled in the platform image. Required on the host only if you run the backend outside Docker and want container scanning. |
-| An Azure subscription | Only needed for the registry push and deployment stages. |
+| An AWS account | Only needed for the registry push and deployment stages. |
 
-**Azure prerequisites (only for push and deploy):**
+**AWS prerequisites (only for push and deploy):**
 
-- An Azure Container Registry.
-- An Azure Container App to deploy to, which must **not** be the Container App hosting this platform.
+- An Amazon ECR.
+- An ECR repository to deploy to, which must **not** be the Container App hosting this platform.
 - A service principal with permission to push to the registry (`AcrPush`) and to update the target Container App (`Microsoft.App/containerApps/write`).
 
 ---
@@ -303,26 +301,26 @@ Copy `.env.example` to `.env` and fill it in. `.env` and every `.env.*` file exc
 
 | Variable | Required for | Description |
 | --- | --- | --- |
-| `CONTAINER_REGISTRY` | Registry push | Registry login server, e.g. `<your-registry>.azurecr.io`. If unset, the push stage is skipped. |
+| `CONTAINER_REGISTRY` | Registry push | Registry login server, e.g. `<your-registry>.AWScr.io`. If unset, the push stage is skipped. |
 | `CONTAINER_REGISTRY_REPOSITORY` | Registry push | Repository name within the registry. Defaults to `devsecops-pipeline`. |
 
-### Azure service principal
+### AWS service principal
 
 | Variable | Required for | Description |
 | --- | --- | --- |
-| `AZURE_TENANT_ID` | Push + deploy | Entra tenant ID of the service principal. |
-| `AZURE_CLIENT_ID` | Push + deploy | Service principal application (client) ID. Also used as the registry username. |
-| `AZURE_CLIENT_SECRET` | Push + deploy | Service principal secret. Passed to `docker login` over stdin, never as an argument. |
-| `AZURE_SUBSCRIPTION_ID` | Deploy | Subscription containing the deployment target. |
+| `AWS_TENANT_ID` | Push + deploy | Entra tenant ID of the service principal. |
+| `AWS_CLIENT_ID` | Push + deploy | Service principal application (client) ID. Also used as the registry username. |
+| `AWS_CLIENT_SECRET` | Push + deploy | Service principal secret. Passed to `docker login` over stdin, never as an argument. |
+| `AWS_SUBSCRIPTION_ID` | Deploy | Subscription containing the deployment target. |
 
-If the tenant, client, and secret variables are all present, the deployment stage uses `ClientSecretCredential`. Otherwise it falls back to `DefaultAzureCredential`, so the same code path works from a managed identity.
+If the tenant, client, and secret variables are all present, the deployment stage uses `ClientSecretCredential`. Otherwise it falls back to `DefaultAWSCredential`, so the same code path works from a managed identity.
 
-### Azure deployment target
+### ECR target
 
 | Variable | Required for | Description |
 | --- | --- | --- |
-| `AZURE_RESOURCE_GROUP` | Deploy | Resource group containing the target Container App. |
-| `AZURE_CONTAINER_APP_NAME` | Deploy | Name of the Container App to update. Must not be the app hosting this platform. |
+| `AWS_RESOURCE_GROUP` | Deploy | Resource group containing the target Container App. |
+| `AWS_CONTAINER_APP_NAME` | Deploy | Name of the Container App to update. Must not be the app hosting this platform. |
 
 ### Backend runtime
 
@@ -349,7 +347,7 @@ Every pipeline runs the same nine stages in order. Stages 6–9 are gated by per
 | 6 | `docker_build` | Docker Build | `docker build -t devsecops-pipeline:<pipeline_id>-<run_id> <workspace>`. Requires `docker_enabled` and a `Dockerfile` in the workspace. |
 | 7 | `container_scan` | Container Security Scan | Runs Trivy against the freshly built image and stores the full JSON report. |
 | 8 | `registry_push` | Registry Push | Tags and pushes the image to `CONTAINER_REGISTRY`. Requires `registry_enabled`. |
-| 9 | `deployment` | Deployment | Updates the target Azure Container App to the pushed image. Requires `deployment_enabled`. |
+| 9 | `deployment` | Deployment | Updates the target ECR repository to the pushed image. Requires `deployment_enabled`. |
 
 **Pipeline configuration flags**
 
@@ -378,7 +376,7 @@ The security score starts at 100 and deducts per finding by severity — CRITICA
 **Stage ordering guarantees**
 
 - The container scan runs only against an image the build stage actually produced.
-- The deployment stage deploys only the **registry** image, never a local-only build tag, because Azure pulls the image itself and a local tag would fail at pull time with a far less obvious error.
+- The deployment stage deploys only the **registry** image, never a local-only build tag, because AWS pulls the image itself and a local tag would fail at pull time with a far less obvious error.
 
 ---
 
@@ -449,17 +447,17 @@ The first scan after a fresh checkout of the vulnerability database downloads it
 
 ---
 
-## Azure Container Registry Push
+## Amazon ECR Push
 
 Stage 8 tags the local build and pushes it to the configured registry.
 
 **Authentication.** The pipeline authenticates with its service principal:
 
 ```bash
-docker login <registry> --username $AZURE_CLIENT_ID --password-stdin
+docker login <registry> --username $AWS_CLIENT_ID --password-stdin
 ```
 
-The secret is written to the process's standard input and never appears in an argument vector — argument vectors are visible to every process on the host and would also be captured into the persisted stage details. The Azure CLI is deliberately not used here: `az acr login` needs a writable CLI profile inside the container, and an interactive CLI user credential cannot be refreshed non-interactively under Entra security defaults.
+The ECR authorization token is written to the process's standard input and never appears in an argument vector. boto3 obtains that token through the standard AWS credential provider chain, including GitHub Actions OIDC.
 
 **Tagging.** Only the tag portion of the local image is carried over, so the registry repository can be named independently of the local build tag:
 
@@ -468,15 +466,15 @@ local:     devsecops-pipeline:<pipeline_id>-<run_id>
 registry:  <CONTAINER_REGISTRY>/<CONTAINER_REGISTRY_REPOSITORY>:<pipeline_id>-<run_id>
 ```
 
-The stage is skipped when `registry_enabled` is false or `CONTAINER_REGISTRY` is unset, and fails when `AZURE_CLIENT_ID` or `AZURE_CLIENT_SECRET` is missing. The resulting fully-qualified image reference is recorded in the stage details and carried forward to the deployment stage.
+The stage is skipped when `registry_enabled` is false or `CONTAINER_REGISTRY` is unset, and fails when `AWS_CLIENT_ID` or `AWS_CLIENT_SECRET` is missing. The resulting fully-qualified image reference is recorded in the stage details and carried forward to the deployment stage.
 
 ---
 
-## Azure Container Apps Deployment
+## AWS ECR integration
 
-Stage 9 updates the Container App named by `AZURE_CONTAINER_APP_NAME` in `AZURE_RESOURCE_GROUP` to the image that stage 8 pushed.
+Stage 9 updates the Container App named by `AWS_CONTAINER_APP_NAME` in `AWS_RESOURCE_GROUP` to the image that stage 8 pushed.
 
-The stage uses `azure-mgmt-appcontainers` directly rather than the Azure CLI: the `containerapp` command lives in a CLI extension that is not present in the image and cannot be installed non-interactively at request time.
+The stage uses `AWS-mgmt-appcontainers` directly rather than the AWS credentials: the `containerapp` command lives in a CLI extension that is not present in the image and cannot be installed non-interactively at request time.
 
 **How the update is performed**
 
@@ -488,7 +486,7 @@ Sending only the template matters. Echoing the whole resource back would resubmi
 
 On success the stage records the container app name, resource group, deployed image, new revision name, provisioning state, and the public application URL derived from the ingress FQDN.
 
-Deployment is strictly opt-in. It is skipped unless `deployment_enabled` is true, and it fails fast with an explicit message if `AZURE_SUBSCRIPTION_ID`, `AZURE_RESOURCE_GROUP`, or `AZURE_CONTAINER_APP_NAME` is unset.
+Deployment is strictly opt-in. It is skipped unless `deployment_enabled` is true, and it fails fast with an explicit message if `AWS_SUBSCRIPTION_ID`, `AWS_RESOURCE_GROUP`, or `AWS_CONTAINER_APP_NAME` is unset.
 
 ---
 
@@ -504,10 +502,10 @@ curl -s http://127.0.0.1:5000/
 # {"message":"Backend is running","service":"DevSecOps Platform API","success":true,"version":"1.0.0"}
 ```
 
-**Azure connectivity**
+**AWS connectivity**
 
 ```bash
-curl -s http://127.0.0.1:5000/api/azure/health
+curl -s http://127.0.0.1:5000/api/AWS/health
 ```
 
 Returns `200` with `"connected": true` when the configured credential can list resources in the resource group, or `503` with the error when it cannot.
@@ -534,7 +532,7 @@ A newly created revision may take a few seconds to become ready; retry briefly b
 - **`.env.example` is value-free.** It documents every variable with empty values and is the only env file tracked by git.
 - **Registry credentials are passed over stdin.** `docker login --password-stdin` keeps the service principal secret out of argument vectors, which are readable by other processes on the host and would otherwise be persisted into stage details.
 - **Command output is truncated.** Captured stderr is limited to the last 12,000 characters per command to bound what a failing stage writes into the database.
-- **The Azure CLI profile is never mounted.** Azure authentication uses a service principal, or the ambient credential chain when running under a managed identity.
+- **The AWS credentials profile is never mounted.** AWS authentication uses a service principal, or the ambient credential chain when running under a managed identity.
 - **The platform never deploys to itself.** The deployment target is a separate, explicitly configured Container App.
 - **Least privilege.** The deployment service principal needs only registry push rights and `Microsoft.App/containerApps/write` on the target app. The template-only PATCH is what keeps the broader `managedEnvironments/join` permission unnecessary.
 
@@ -600,13 +598,13 @@ All endpoints return JSON with a `success` boolean.
 | `GET` | `/api/containers/<id>/logs` | Container logs. |
 | `GET` | `/api/containers/<id>/stats` | Container resource stats. |
 
-**Azure**
+**AWS**
 
 | Method | Endpoint | Description |
 | --- | --- | --- |
-| `GET` | `/api/azure/health` | Azure connectivity check. |
-| `GET` | `/api/azure/overview` | Resource-group overview. |
-| `GET` | `/api/azure/resources` | Resources in the configured group. |
+| `GET` | `/api/AWS/health` | AWS connectivity check. |
+| `GET` | `/api/AWS/overview` | Resource-group overview. |
+| `GET` | `/api/AWS/resources` | Resources in the configured group. |
 
 ---
 
@@ -732,7 +730,7 @@ docker exec devsecops-platform docker --version
 
 **`registry_push` fails with a login error**
 
-Confirm `CONTAINER_REGISTRY` is the full login server (`<name>.azurecr.io`, no scheme or trailing slash), that `AZURE_CLIENT_ID` and `AZURE_CLIENT_SECRET` are set in `.env`, and that the service principal holds `AcrPush` on the registry. Remember that `.env` changes require `docker compose up -d` to take effect.
+Confirm `CONTAINER_REGISTRY` is the full login server (`<name>.AWScr.io`, no scheme or trailing slash), that `AWS_CLIENT_ID` and `AWS_CLIENT_SECRET` are set in `.env`, and that the service principal holds `AcrPush` on the registry. Remember that `.env` changes require `docker compose up -d` to take effect.
 
 **`LinkedAuthorizationFailed` on deployment**
 
@@ -740,19 +738,19 @@ ARM reports that the caller may write the Container App but lacks `Microsoft.App
 
 **`No registry image is available for deployment`**
 
-The deployment stage refuses to deploy a local-only build tag, because Azure pulls the image itself. Enable `registry_enabled` and make sure the push stage succeeds first.
+The deployment stage refuses to deploy a local-only build tag, because AWS pulls the image itself. Enable `registry_enabled` and make sure the push stage succeeds first.
 
 **Deployment stage reports a missing configuration value**
 
-The stage skips with an explicit message naming the missing variable when `AZURE_SUBSCRIPTION_ID`, `AZURE_RESOURCE_GROUP`, or `AZURE_CONTAINER_APP_NAME` is unset. Set it in `.env` and recreate the container.
+The stage skips with an explicit message naming the missing variable when `AWS_SUBSCRIPTION_ID`, `AWS_RESOURCE_GROUP`, or `AWS_CONTAINER_APP_NAME` is unset. Set it in `.env` and recreate the container.
 
 **Container scan is very slow on the first run**
 
 Trivy is downloading its vulnerability database. It is cached in `/app/data/trivy-cache`, which is backed by the `./data` volume — keep that volume and subsequent scans will be fast. Removing `./data` also deletes the SQLite database.
 
-**`/api/azure/*` returns 503**
+**`/api/AWS/*` returns 503**
 
-`DefaultAzureCredential` could not authenticate, or the credential cannot list resources in the configured group. Set `AZURE_SUBSCRIPTION_ID`, `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, and `AZURE_CLIENT_SECRET` in `.env` and confirm the service principal has read access to the resource group. Note that `app/routes/azure.py` falls back to built-in defaults for the subscription, tenant, and resource group when those variables are unset — always set them explicitly for your own environment.
+`DefaultAWSCredential` could not authenticate, or the credential cannot list resources in the configured group. Set `AWS_SUBSCRIPTION_ID`, `AWS_TENANT_ID`, `AWS_CLIENT_ID`, and `AWS_CLIENT_SECRET` in `.env` and confirm the service principal has read access to the resource group. Note that `app/routes/AWS.py` falls back to built-in defaults for the subscription, tenant, and resource group when those variables are unset — always set them explicitly for your own environment.
 
 **Backend code changes have no effect**
 

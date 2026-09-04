@@ -78,11 +78,11 @@ function DashboardLayout({ children }) {
             </span>
 
             <NavLink
-              to="/azure"
+              to="/activity"
               className="nav-link"
             >
               <span className="nav-icon">☁</span>
-              Azure Activity
+              Activity
             </NavLink>
           </div>
 

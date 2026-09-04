@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 import re
@@ -21,6 +22,7 @@ from app.models import (
 )
 
 from app.scanners.code_scanner import CodeScanner
+from app.services.aws_service import AwsService
 
 
 # ============================================================
@@ -1207,12 +1209,8 @@ def push_registry_image(
     """
     Push the built image to the configured container registry.
 
-    Authentication uses the pipeline's dedicated Azure service principal via
-    ``docker login --password-stdin``.  The Azure CLI is deliberately not
-    involved: a CLI user profile is an interactive credential and cannot be
-    refreshed non-interactively under Entra security defaults, and
-    ``az acr login`` would additionally require a writable CLI profile inside
-    the container.
+    Authentication uses an ECR authorization token from boto3. Credentials
+    come from boto3's standard provider chain, including GitHub Actions OIDC.
     """
 
     if not image:
@@ -1241,14 +1239,16 @@ def push_registry_image(
             + str(registry)
         )
 
-    client_id = os.getenv("AZURE_CLIENT_ID")
-    client_secret = os.getenv("AZURE_CLIENT_SECRET")
+    aws_service = AwsService()
+    token_response = aws_service.client.get_authorization_token()
+    authorization_data = token_response.get("authorizationData", [])
+    if not authorization_data or not authorization_data[0].get("authorizationToken"):
+        raise RuntimeError("AWS ECR returned no authorization token.")
 
-    if not client_id or not client_secret:
-        raise RuntimeError(
-            "Registry push requires AZURE_CLIENT_ID and AZURE_CLIENT_SECRET "
-            "to be configured for the pipeline's service principal."
-        )
+    decoded = base64.b64decode(
+        authorization_data[0]["authorizationToken"]
+    ).decode("utf-8")
+    _, password = decoded.split(":", 1)
 
     login_result = run_command(
         [
@@ -1256,11 +1256,11 @@ def push_registry_image(
             "login",
             registry_host,
             "--username",
-            client_id,
+            "AWS",
             "--password-stdin",
         ],
         timeout=180,
-        stdin_text=client_secret,
+        stdin_text=password,
     )
 
     if login_result["returncode"] != 0:
@@ -1321,173 +1321,6 @@ def push_registry_image(
     return {
         "status": "success",
         "image": target,
-    }
-
-
-# ============================================================
-# AZURE DEPLOYMENT
-# ============================================================
-
-def deploy_azure_container(
-    image,
-):
-    """
-    Update the dedicated Azure Container App deployment target.
-
-    Deployment is deliberately opt-in.
-
-    Required environment variables:
-
-        AZURE_SUBSCRIPTION_ID
-        AZURE_RESOURCE_GROUP
-        AZURE_CONTAINER_APP_NAME
-
-    Authentication uses the Azure SDK rather than the Azure CLI.  The
-    ``containerapp`` CLI command lives in an extension that is not present in
-    this image and cannot be installed non-interactively at request time, and
-    a CLI user profile is not a valid daemon credential under Entra security
-    defaults.  A service principal is used when its variables are present,
-    otherwise the ambient credential chain is used so the same code path keeps
-    working from a managed identity.
-    """
-
-    if not image:
-        return {
-            "status": "skipped",
-            "message": "No image available.",
-        }
-
-    subscription_id = os.getenv(
-        "AZURE_SUBSCRIPTION_ID"
-    )
-
-    resource_group = os.getenv(
-        "AZURE_RESOURCE_GROUP"
-    )
-
-    container_app = os.getenv(
-        "AZURE_CONTAINER_APP_NAME"
-    )
-
-    if not subscription_id:
-        return {
-            "status": "skipped",
-            "message": (
-                "AZURE_SUBSCRIPTION_ID is not configured."
-            ),
-        }
-
-    if not resource_group:
-        return {
-            "status": "skipped",
-            "message": (
-                "AZURE_RESOURCE_GROUP is not configured."
-            ),
-        }
-
-    if not container_app:
-        return {
-            "status": "skipped",
-            "message": (
-                "AZURE_CONTAINER_APP_NAME is not configured."
-            ),
-        }
-
-    # Imported lazily so the Azure SDK is only loaded when a deployment is
-    # actually requested, keeping application start-up unaffected.
-    from azure.identity import (
-        ClientSecretCredential,
-        DefaultAzureCredential,
-    )
-    from azure.mgmt.appcontainers import ContainerAppsAPIClient
-    from azure.mgmt.appcontainers.models import ContainerApp
-
-    tenant_id = os.getenv("AZURE_TENANT_ID")
-    client_id = os.getenv("AZURE_CLIENT_ID")
-    client_secret = os.getenv("AZURE_CLIENT_SECRET")
-
-    if tenant_id and client_id and client_secret:
-        credential = ClientSecretCredential(
-            tenant_id=tenant_id,
-            client_id=client_id,
-            client_secret=client_secret,
-        )
-    else:
-        credential = DefaultAzureCredential()
-
-    client = ContainerAppsAPIClient(
-        credential,
-        subscription_id,
-    )
-
-    try:
-        existing = client.container_apps.get(
-            resource_group,
-            container_app,
-        )
-
-        containers = (
-            existing.template.containers
-            if existing.template
-            else None
-        )
-
-        if not containers:
-            raise RuntimeError(
-                "Container App "
-                f"{container_app} has no container definition to update."
-            )
-
-        # Only the image is changed.  The live template is round-tripped so
-        # scaling and volume settings are preserved.
-        containers[0].image = image
-
-        # The update is a PATCH, so anything left out of the payload keeps its
-        # current value.  Only the template is sent: echoing the whole resource
-        # back would re-submit ``managedEnvironmentId``, and ARM then re-checks
-        # the environment link and demands
-        # ``Microsoft.App/managedEnvironments/join/action``, which the
-        # deployment service principal is not granted.  Ingress and registry
-        # settings live in ``configuration`` and are preserved by omission.
-        patch = ContainerApp(
-            template=existing.template,
-        )
-
-        updated = client.container_apps.begin_update(
-            resource_group,
-            container_app,
-            patch,
-        ).result()
-
-    except Exception as error:
-        raise RuntimeError(
-            "Azure Container App deployment failed for "
-            f"{container_app}: {error}"
-        )
-
-    finally:
-        credential.close()
-
-    fqdn = None
-
-    if (
-        updated.configuration
-        and updated.configuration.ingress
-    ):
-        fqdn = updated.configuration.ingress.fqdn
-
-    return {
-        "status": "success",
-        "container_app": container_app,
-        "resource_group": resource_group,
-        "image": image,
-        "revision": updated.latest_revision_name,
-        "provisioning_state": updated.provisioning_state,
-        "url": (
-            f"https://{fqdn}"
-            if fqdn
-            else None
-        ),
     }
 
 
@@ -2543,95 +2376,6 @@ def run_pipeline(pipeline_id):
                 ),
             )
 
-
-        # ====================================================
-        # STAGE 9 — DEPLOYMENT
-        # ====================================================
-
-        if pipeline["deployment_enabled"]:
-            _, stage_timer = stage_start(
-                run,
-                "deployment",
-            )
-
-            # Only a registry image can be deployed.  Azure pulls the image
-            # itself, so a local-only build tag would fail at pull time with a
-            # far less obvious error.
-            deploy_image = run.get("registry_image")
-
-            if not deploy_image:
-                error_message = (
-                    "No registry image is available for deployment. "
-                    "Registry push must succeed before deployment, because "
-                    "Azure cannot pull a local-only Docker tag."
-                )
-
-                stage_finish(
-                    run,
-                    "deployment",
-                    stage_timer,
-                    status="failed",
-                    message=error_message,
-                    error=error_message,
-                )
-
-                raise RuntimeError(
-                    error_message
-                )
-
-            deployment_result = (
-                deploy_azure_container(
-                    deploy_image
-                )
-            )
-
-            run["deployment"] = deployment_result
-
-            if deployment_result.get(
-                "status"
-            ) == "success":
-
-                stage_finish(
-                    run,
-                    "deployment",
-                    stage_timer,
-                    status="success",
-                    message=(
-                        "Deployment completed successfully."
-                    ),
-                    details=deployment_result,
-                )
-
-            else:
-                error_message = deployment_result.get(
-                    "message",
-                    "Deployment failed.",
-                )
-
-                stage_finish(
-                    run,
-                    "deployment",
-                    stage_timer,
-                    status="failed",
-                    message="Deployment failed.",
-                    details=deployment_result,
-                    error=error_message,
-                )
-
-                raise RuntimeError(
-                    "Deployment failed: "
-                    + error_message
-                )
-
-        else:
-            update_stage(
-                run,
-                "deployment",
-                "skipped",
-                message=(
-                    "Deployment disabled for this pipeline."
-                ),
-            )
 
         # ====================================================
         # PIPELINE SUCCESS

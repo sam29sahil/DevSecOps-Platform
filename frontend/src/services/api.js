@@ -278,20 +278,9 @@ export async function getContainerStats(containerId) {
   return request(`/containers/${containerId}/stats`);
 }
 /* =========================================================
-   AZURE
+   CLOUD
 ========================================================= */
 
-export async function getAzureHealth() {
-  return request("/azure/health");
-}
-
-export async function getAzureOverview() {
-  return request("/azure/overview");
-}
-
-export async function getAzureResources() {
-  return request("/azure/resources");
-}
 /* =========================================================
    HEALTH
 ========================================================= */
