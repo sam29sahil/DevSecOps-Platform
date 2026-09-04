@@ -113,9 +113,7 @@ Two deliberate design decisions are worth calling out:
 | flask-cors | 6.0.5 |
 | gunicorn | 23.0.0 (1 worker, 960s timeout) |
 | SQLite | via the Python standard library `sqlite3` |
-| AWS-identity | 1.25.3 |
-| AWS-mgmt-resource | 26.0.0 |
-| AWS-mgmt-appcontainers | 5.0.0 (unpinned in `requirements.txt`) |
+| boto3 | AWS API access and ECR authentication |
 | python-dotenv | 1.2.3 |
 
 > `requirements.txt` also pins Flask-Login, Flask-Migrate, Flask-SQLAlchemy, and SQLAlchemy. The persistence layer in `app/models.py` currently uses raw `sqlite3`, so these are installed but not yet used by the API.
@@ -137,7 +135,7 @@ Two deliberate design decisions are worth calling out:
 | `git` | Repository checkout |
 | `docker-cli` | Build, tag, push, and container management against the host daemon |
 | `trivy` | Container image vulnerability scanning |
-| AWS credentials | Installed in the image; the pipeline itself authenticates through the boto3 |
+| boto3 | AWS API access and ECR authentication |
 
 ---
 
@@ -156,7 +154,7 @@ DevSecOps-Platform/
 │   │   ├── pipelines.py         # /api/pipelines       pipeline CRUD, execution, run history
 │   │   ├── reports.py           # /api/reports         severity report from a stored scan
 │   │   ├── containers.py        # /api/containers      local Docker container management
-│   │   └── AWS.py             # /api/AWS           AWS connectivity and resources
+│   │   └── aws.py             # /api/aws            AWS identity and ECR data
 │   ├── scanners/
 │   │   └── code_scanner.py      # CodeScanner — the SAST rule engine
 │   ├── static/
@@ -165,7 +163,7 @@ DevSecOps-Platform/
 │   ├── src/
 │   │   ├── pages/               # Dashboard, Projects, ProjectDetails, ScanHistory,
 │   │   │                        #   ScanDetails, Vulnerabilities, Pipelines, Containers,
-│   │   │                        #   Reports, AWSActivity
+│   │   │                        #   Reports, AwsActivity
 │   │   ├── components/          # DashboardLayout, Header, Sidebar, StatCard
 │   │   ├── layouts/
 │   │   ├── services/api.js      # REST client (VITE_API_BASE_URL)
@@ -176,7 +174,7 @@ DevSecOps-Platform/
 ├── data/
 │   ├── devsecops.db             # SQLite database (git-ignored)
 │   └── trivy-cache/             # Persisted Trivy vulnerability DB (git-ignored)
-├── Dockerfile                   # Platform image: Python + git + docker-cli + trivy + AWS credentials
+├── Dockerfile                   # Platform image: Python + git + docker-cli + trivy
 ├── docker-compose.yml           # Service definition, port, env_file, volumes
 ├── requirements.txt
 ├── run.py                       # WSGI entrypoint (`run:app`)
@@ -198,11 +196,11 @@ DevSecOps-Platform/
 | Trivy | Bundled in the platform image. Required on the host only if you run the backend outside Docker and want container scanning. |
 | An AWS account | Only needed for the registry push and deployment stages. |
 
-**AWS prerequisites (only for push and deploy):**
+**AWS prerequisites (only for registry access):**
 
 - An Amazon ECR.
-- An ECR repository to deploy to, which must **not** be the Container App hosting this platform.
-- A service principal with permission to push to the registry (`AcrPush`) and to update the target Container App (`Microsoft.App/containerApps/write`).
+- An ECR repository for the image artifacts.
+- AWS credentials supplied through the standard boto3 credential chain.
 
 ---
 
@@ -304,23 +302,14 @@ Copy `.env.example` to `.env` and fill it in. `.env` and every `.env.*` file exc
 | `CONTAINER_REGISTRY` | Registry push | Registry login server, e.g. `<your-registry>.AWScr.io`. If unset, the push stage is skipped. |
 | `CONTAINER_REGISTRY_REPOSITORY` | Registry push | Repository name within the registry. Defaults to `devsecops-pipeline`. |
 
-### AWS service principal
+### AWS configuration
 
 | Variable | Required for | Description |
 | --- | --- | --- |
-| `AWS_TENANT_ID` | Push + deploy | Entra tenant ID of the service principal. |
-| `AWS_CLIENT_ID` | Push + deploy | Service principal application (client) ID. Also used as the registry username. |
-| `AWS_CLIENT_SECRET` | Push + deploy | Service principal secret. Passed to `docker login` over stdin, never as an argument. |
-| `AWS_SUBSCRIPTION_ID` | Deploy | Subscription containing the deployment target. |
+| `AWS_REGION` | AWS API access | AWS region. Defaults to `ap-south-1`. |
+| `AWS_ECR_REPOSITORY` | AWS API access | ECR repository. Defaults to `devsecops-platform`. |
 
-If the tenant, client, and secret variables are all present, the deployment stage uses `ClientSecretCredential`. Otherwise it falls back to `DefaultAWSCredential`, so the same code path works from a managed identity.
-
-### ECR target
-
-| Variable | Required for | Description |
-| --- | --- | --- |
-| `AWS_RESOURCE_GROUP` | Deploy | Resource group containing the target Container App. |
-| `AWS_CONTAINER_APP_NAME` | Deploy | Name of the Container App to update. Must not be the app hosting this platform. |
+No AWS access keys are stored in the repository. boto3 uses the standard credential provider chain.
 
 ### Backend runtime
 
@@ -466,27 +455,13 @@ local:     devsecops-pipeline:<pipeline_id>-<run_id>
 registry:  <CONTAINER_REGISTRY>/<CONTAINER_REGISTRY_REPOSITORY>:<pipeline_id>-<run_id>
 ```
 
-The stage is skipped when `registry_enabled` is false or `CONTAINER_REGISTRY` is unset, and fails when `AWS_CLIENT_ID` or `AWS_CLIENT_SECRET` is missing. The resulting fully-qualified image reference is recorded in the stage details and carried forward to the deployment stage.
+The stage is skipped when `registry_enabled` is false or `CONTAINER_REGISTRY` is unset. The resulting fully-qualified image reference is recorded in the stage details.
 
 ---
 
-## AWS ECR integration
+## AWS ECR API
 
-Stage 9 updates the Container App named by `AWS_CONTAINER_APP_NAME` in `AWS_RESOURCE_GROUP` to the image that stage 8 pushed.
-
-The stage uses `AWS-mgmt-appcontainers` directly rather than the AWS credentials: the `containerapp` command lives in a CLI extension that is not present in the image and cannot be installed non-interactively at request time.
-
-**How the update is performed**
-
-1. Fetch the live Container App and read its template.
-2. Set the first container's image to the pushed registry reference.
-3. Submit a **PATCH containing only the template**.
-
-Sending only the template matters. Echoing the whole resource back would resubmit `managedEnvironmentId`, and ARM then re-validates the environment link and requires `Microsoft.App/managedEnvironments/join/action` on the managed environment — a permission a scoped deployment service principal typically does not hold, producing `LinkedAuthorizationFailed`. Because the update is a PATCH, anything omitted keeps its current value, so ingress, registry credentials, and scaling settings are preserved by omission.
-
-On success the stage records the container app name, resource group, deployed image, new revision name, provisioning state, and the public application URL derived from the ingress FQDN.
-
-Deployment is strictly opt-in. It is skipped unless `deployment_enabled` is true, and it fails fast with an explicit message if `AWS_SUBSCRIPTION_ID`, `AWS_RESOURCE_GROUP`, or `AWS_CONTAINER_APP_NAME` is unset.
+The Flask API reads AWS identity and ECR metadata server-side through boto3. The browser never authenticates directly with AWS.
 
 ---
 
@@ -505,24 +480,12 @@ curl -s http://127.0.0.1:5000/
 **AWS connectivity**
 
 ```bash
-curl -s http://127.0.0.1:5000/api/AWS/health
+curl -s http://127.0.0.1:5000/api/aws/status
+curl -s http://127.0.0.1:5000/api/aws/ecr
+curl -s http://127.0.0.1:5000/api/aws/images
 ```
 
-Returns `200` with `"connected": true` when the configured credential can list resources in the resource group, or `503` with the error when it cannot.
-
-**Deployed application**
-
-The deployment stage returns the target Container App's public URL in its stage details. Verify the new revision is serving traffic:
-
-```bash
-RUN_ID=<run_id>
-URL=$(curl -s http://127.0.0.1:5000/api/pipelines/runs/$RUN_ID \
-  | python -c "import sys,json;print([s for s in json.load(sys.stdin)['run']['stages'] if s['id']=='deployment'][0]['details']['url'])")
-
-curl -o /dev/null -w "%{http_code}\n" "$URL"
-```
-
-A newly created revision may take a few seconds to become ready; retry briefly before treating a non-200 as a failure.
+Returns `200` with real AWS data when credentials and the repository are available, or `503` with a JSON error when AWS cannot be reached.
 
 ---
 
@@ -533,8 +496,6 @@ A newly created revision may take a few seconds to become ready; retry briefly b
 - **Registry credentials are passed over stdin.** `docker login --password-stdin` keeps the service principal secret out of argument vectors, which are readable by other processes on the host and would otherwise be persisted into stage details.
 - **Command output is truncated.** Captured stderr is limited to the last 12,000 characters per command to bound what a failing stage writes into the database.
 - **The AWS credentials profile is never mounted.** AWS authentication uses a service principal, or the ambient credential chain when running under a managed identity.
-- **The platform never deploys to itself.** The deployment target is a separate, explicitly configured Container App.
-- **Least privilege.** The deployment service principal needs only registry push rights and `Microsoft.App/containerApps/write` on the target app. The template-only PATCH is what keeps the broader `managedEnvironments/join` permission unnecessary.
 
 > **Docker socket exposure.** Mounting `/var/run/docker.sock` grants the container full control of the host Docker daemon, which is effectively root-equivalent on the host. This is required for the build, scan, and push stages. Run the platform only on a host you control, and do not expose port 5000 to untrusted networks — the API has no authentication layer.
 

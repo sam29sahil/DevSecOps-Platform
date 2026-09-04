@@ -277,6 +277,22 @@ export async function getContainerLogs(containerId) {
 export async function getContainerStats(containerId) {
   return request(`/containers/${containerId}/stats`);
 }
+
+/* =========================================================
+   AWS
+========================================================= */
+
+export async function getAwsStatus() {
+  return request("/aws/status");
+}
+
+export async function getAwsEcr() {
+  return request("/aws/ecr");
+}
+
+export async function getAwsImages() {
+  return request("/aws/images");
+}
 /* =========================================================
    CLOUD
 ========================================================= */

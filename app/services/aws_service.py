@@ -12,7 +12,8 @@ class AwsService:
     def __init__(self, client=None, region=None, repository=None):
         self.region = region or os.getenv("AWS_REGION", DEFAULT_REGION)
         self.repository = repository or os.getenv(
-            "ECR_REPOSITORY", DEFAULT_REPOSITORY
+            "AWS_ECR_REPOSITORY",
+            os.getenv("ECR_REPOSITORY", DEFAULT_REPOSITORY),
         )
         self.client = client or boto3.client(
             "ecr", region_name=self.region
@@ -22,10 +23,14 @@ class AwsService:
         self.client.describe_repositories(
             repositoryNames=[self.repository]
         )
+        identity = boto3.client(
+            "sts", region_name=self.region
+        ).get_caller_identity()
         return {
             "success": True,
             "provider": "AWS",
             "connected": True,
+            "account_id": identity.get("Account"),
             "region": self.region,
         }
 
@@ -56,9 +61,15 @@ class AwsService:
         return {
             "name": repository.get("repositoryName"),
             "uri": repository.get("repositoryUri"),
+            "arn": repository.get("repositoryArn"),
             "region": self.region,
             "image_count": len(images),
             "created_at": _serialize_datetime(repository.get("createdAt")),
+            "scan_on_push": (
+                repository.get("imageScanningConfiguration", {})
+                .get("scanOnPush")
+            ),
+            "encryption": repository.get("encryptionConfiguration", {}),
             "latest_image": serialize_image(latest) if latest else None,
         }
 
@@ -85,6 +96,7 @@ def serialize_image(image):
     return {
         "tags": image.get("imageTags") or [],
         "digest": image.get("imageDigest"),
-        "size": image.get("imageSizeInBytes"),
+        "image_size": image.get("imageSizeInBytes"),
         "pushed_at": _serialize_datetime(image.get("imagePushedAt")),
+        "media_type": image.get("imageManifestMediaType"),
     }

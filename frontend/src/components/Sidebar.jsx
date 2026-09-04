@@ -61,14 +61,9 @@ const menuItems = [
     section: "INFRASTRUCTURE",
     items: [
       {
-        name: "Activity",
-        path: "/activity",
+        name: "AWS Activity",
+        path: "/aws",
         icon: Cloud,
-      },
-      {
-        name: "Activity",
-        path: "/activity",
-        icon: Activity,
       },
     ],
   },
