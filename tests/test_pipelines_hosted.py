@@ -395,6 +395,7 @@ def test_workflow_yaml_structure():
     assert "id-token: write" in content
     assert "arn:aws:iam::288418346751:role/DevSecOpsPlatform-GitHubActions" in content
     assert "288418346751.dkr.ecr.ap-south-1.amazonaws.com" in content
-    assert "secrets.GITHUB_CALLBACK_SECRET" in content
+    assert "secrets.DEVSECOPS_CALLBACK_SECRET" in content
     assert "secrets.RENDER_DEPLOY_HOOK" in content
+
 

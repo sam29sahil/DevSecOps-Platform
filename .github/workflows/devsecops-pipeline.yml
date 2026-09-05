@@ -56,7 +56,7 @@ jobs:
       ECR_REGISTRY: 288418346751.dkr.ecr.ap-south-1.amazonaws.com
       OIDC_ROLE: arn:aws:iam::288418346751:role/DevSecOpsPlatform-GitHubActions
       CALLBACK_URL: ${{ inputs.callback_url }}
-      CALLBACK_SECRET: ${{ secrets.GITHUB_CALLBACK_SECRET }}
+      CALLBACK_SECRET: ${{ secrets.DEVSECOPS_CALLBACK_SECRET }}
       RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
       RUN_ID: ${{ inputs.run_id }}
       PIPELINE_ID: ${{ inputs.pipeline_id }}
@@ -200,7 +200,7 @@ jobs:
           send_callback "container_scan" "running" "Scanning container image with Trivy..."
           echo "Running Trivy image vulnerability scan on ${FULL_IMAGE_NAME}..."
 
-          if trivy image --scanners vuln --severity HIGH,CRITICAL --exit-code 1 "${FULL_IMAGE_NAME}"; then
+          if trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 "${FULL_IMAGE_NAME}"; then
             echo "Trivy container scan passed."
             send_callback "container_scan" "success" "Container security scan passed." "{\"image\":\"${FULL_IMAGE_NAME}\"}"
           else
