@@ -8,6 +8,7 @@ import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from flask import Blueprint, jsonify, request
 
@@ -1202,6 +1203,50 @@ def scan_container_image(image):
 # REGISTRY PUSH
 # ============================================================
 
+
+def deploy_render_container(image_url):
+    """
+    Deploy the container to Render using a deploy hook.
+    """
+    deploy_hook = os.getenv("RENDER_DEPLOY_HOOK")
+    
+    if not deploy_hook:
+        return {
+            "status": "skipped",
+            "message": "RENDER_DEPLOY_HOOK is not configured.",
+        }
+        
+    try:
+        import requests
+
+        parsed = urlsplit(deploy_hook)
+        query_params = parse_qsl(parsed.query, keep_blank_values=True)
+        updated_params = [(k, v) for k, v in query_params if k != "imgURL"]
+        updated_params.append(("imgURL", image_url))
+        new_query = urlencode(updated_params)
+
+        url = urlunsplit((
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            new_query,
+            parsed.fragment,
+        ))
+
+        response = requests.post(url, timeout=30)
+        response.raise_for_status()
+
+        return {
+            "status": "success",
+            "message": "Triggered Render deployment successfully.",
+        }
+    except Exception as e:
+        return {
+            "status": "failed",
+            "message": f"Render deployment failed: {str(e)}",
+        }
+
+
 def push_registry_image(
     image,
     registry,
@@ -2376,6 +2421,67 @@ def run_pipeline(pipeline_id):
                 ),
             )
 
+
+        
+        # ====================================================
+        # STAGE 9 - DEPLOYMENT
+        # ====================================================
+
+        if pipeline.get("deployment_enabled"):
+            _, stage_timer = stage_start(
+                run,
+                "deployment",
+            )
+            
+            if run.get("registry_image"):
+                deploy_result = deploy_render_container(run["registry_image"])
+                
+                if deploy_result["status"] == "success":
+                    run["deployment"] = "success"
+                    stage_finish(
+                        run,
+                        "deployment",
+                        stage_timer,
+                        status="success",
+                        message="Container deployed to Render.",
+                        details=deploy_result,
+                    )
+                elif deploy_result["status"] == "skipped":
+                    stage_finish(
+                        run,
+                        "deployment",
+                        stage_timer,
+                        status="skipped",
+                        message=deploy_result.get("message", "Deployment skipped."),
+                        details=deploy_result,
+                    )
+                else:
+                    error_message = deploy_result.get("message", "Deployment failed.")
+                    stage_finish(
+                        run,
+                        "deployment",
+                        stage_timer,
+                        status="failed",
+                        message="Deployment failed.",
+                        details=deploy_result,
+                        error=error_message,
+                    )
+                    raise RuntimeError(error_message)
+            else:
+                stage_finish(
+                    run,
+                    "deployment",
+                    stage_timer,
+                    status="skipped",
+                    message="Deployment skipped because no registry image is available.",
+                )
+        else:
+            update_stage(
+                run,
+                "deployment",
+                "skipped",
+                message="Deployment disabled for this pipeline.",
+            )
 
         # ====================================================
         # PIPELINE SUCCESS
