@@ -1,4 +1,5 @@
 import base64
+import hmac
 import json
 import os
 import re
@@ -10,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+import requests
 from flask import Blueprint, jsonify, request
 
 from app.models import (
@@ -118,6 +120,15 @@ def run_row_to_dict(row):
         run.pop("quality_gate_json", None),
         None,
     )
+
+    docker_stage = next((s for s in run["stages"] if s.get("id") == "docker_build"), None)
+    run["docker_image"] = docker_stage.get("details", {}).get("image") if docker_stage else None
+
+    registry_stage = next((s for s in run["stages"] if s.get("id") == "registry_push"), None)
+    run["registry_image"] = registry_stage.get("details", {}).get("image") if registry_stage else None
+
+    deployment_stage = next((s for s in run["stages"] if s.get("id") == "deployment"), None)
+    run["deployment"] = "success" if (deployment_stage and deployment_stage.get("status") == "success") else None
 
     return run
 
@@ -477,6 +488,113 @@ def find_pipeline(pipeline_id):
 
 def find_run(run_id):
     return get_pipeline_run(run_id)
+
+
+def is_valid_github_url(url):
+    """
+    Validate that a URL is a valid GitHub HTTPS repository URL.
+    Format: https://github.com/{owner}/{repo} (with optional .git suffix).
+    """
+    if not url or not isinstance(url, str):
+        return False
+
+    url = url.strip()
+    try:
+        parsed = urlsplit(url)
+    except Exception:
+        return False
+
+    if parsed.scheme != "https":
+        return False
+
+    if parsed.netloc.lower() not in ("github.com", "www.github.com"):
+        return False
+
+    if parsed.query or parsed.fragment:
+        return False
+
+    path = parsed.path.strip("/")
+    parts = path.split("/")
+    if len(parts) != 2:
+        return False
+
+    owner, repo = parts
+    if repo.endswith(".git"):
+        repo = repo[:-4]
+
+    if not owner or not repo:
+        return False
+
+    pattern = re.compile(r"^[a-zA-Z0-9_.-]+$")
+    if not pattern.match(owner) or not pattern.match(repo):
+        return False
+
+    return True
+
+
+def dispatch_github_workflow(
+    repository_url,
+    branch,
+    pipeline_id,
+    run_id,
+    docker_enabled=True,
+    registry_enabled=False,
+    deployment_enabled=False,
+):
+    """
+    Dispatch the GitHub Actions devsecops-pipeline.yml workflow.
+    """
+    github_token = os.getenv("GITHUB_TOKEN")
+    if not github_token:
+        raise RuntimeError("GitHub Actions integration is not configured.")
+
+    github_repo = os.getenv(
+        "GITHUB_REPOSITORY",
+        "sam29sahil/DevSecOps-Platform",
+    ).strip()
+    if "/" not in github_repo:
+        raise RuntimeError("GITHUB_REPOSITORY must be in the format 'owner/repo'.")
+
+    callback_url = os.getenv("GITHUB_CALLBACK_URL", "").strip().rstrip("/")
+    dispatch_url = (
+        f"https://api.github.com/repos/{github_repo}/actions/workflows/devsecops-pipeline.yml/dispatches"
+    )
+
+    headers = {
+        "Authorization": f"Bearer {github_token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+    payload = {
+        "ref": "main",
+        "inputs": {
+            "repository_url": repository_url,
+            "branch": branch or "main",
+            "pipeline_id": str(pipeline_id),
+            "run_id": str(run_id),
+            "callback_url": callback_url,
+            "docker_enabled": "true" if docker_enabled else "false",
+            "registry_enabled": "true" if registry_enabled else "false",
+            "deployment_enabled": "true" if deployment_enabled else "false",
+        },
+    }
+
+    try:
+        response = requests.post(
+            dispatch_url,
+            headers=headers,
+            json=payload,
+            timeout=30,
+        )
+        if response.status_code not in (200, 204):
+            raise RuntimeError(
+                f"GitHub API dispatch failed with status {response.status_code}: {response.text}"
+            )
+    except requests.RequestException as e:
+        raise RuntimeError(f"Failed to reach GitHub API: {str(e)}")
+
+    return True
 
 
 
@@ -1821,6 +1939,54 @@ def run_pipeline(pipeline_id):
             }
         ), 404
 
+    repo_url = pipeline.get("repository_url", "")
+    if not is_valid_github_url(repo_url):
+        error_msg = (
+            f"Invalid GitHub repository URL '{repo_url}'. "
+            "Must be an HTTPS GitHub repository URL (e.g., https://github.com/owner/repo)."
+        )
+        pipeline["status"] = "failed"
+        pipeline["last_error"] = error_msg
+        pipeline["updated_at"] = utc_now()
+        pipeline = save_pipeline(pipeline)
+        return jsonify(
+            {
+                "success": False,
+                "error": error_msg,
+                "pipeline": pipeline,
+            }
+        ), 400
+
+    execution_mode = os.getenv("PIPELINE_EXECUTION_MODE", "local").strip().lower()
+    if execution_mode == "hosted":
+        if not os.getenv("GITHUB_TOKEN"):
+            error_msg = "GitHub Actions integration is not configured."
+            pipeline["status"] = "failed"
+            pipeline["last_error"] = error_msg
+            pipeline["updated_at"] = utc_now()
+            pipeline = save_pipeline(pipeline)
+            return jsonify(
+                {
+                    "success": False,
+                    "error": error_msg,
+                    "pipeline": pipeline,
+                }
+            ), 500
+
+        if not os.getenv("GITHUB_CALLBACK_SECRET"):
+            error_msg = "GITHUB_CALLBACK_SECRET is not configured."
+            pipeline["status"] = "failed"
+            pipeline["last_error"] = error_msg
+            pipeline["updated_at"] = utc_now()
+            pipeline = save_pipeline(pipeline)
+            return jsonify(
+                {
+                    "success": False,
+                    "error": error_msg,
+                    "pipeline": pipeline,
+                }
+            ), 500
+
     started_at = utc_now()
 
     run = {
@@ -2185,8 +2351,114 @@ def run_pipeline(pipeline_id):
                 )
             )
 
+        execution_mode = os.getenv("PIPELINE_EXECUTION_MODE", "local").strip().lower()
+
+        if execution_mode == "hosted":
+            # ====================================================
+            # HOSTED EXECUTION: Hand off Stages 6-9 to GitHub Actions
+            # ====================================================
+
+            if pipeline["docker_enabled"]:
+                update_stage(
+                    run,
+                    "docker_build",
+                    "running",
+                    message="Queued in GitHub Actions.",
+                    started_at=utc_now(),
+                )
+                update_stage(
+                    run,
+                    "container_scan",
+                    "pending",
+                    message="Queued in GitHub Actions.",
+                )
+            else:
+                update_stage(
+                    run,
+                    "docker_build",
+                    "skipped",
+                    message="Docker build disabled for this pipeline.",
+                )
+                update_stage(
+                    run,
+                    "container_scan",
+                    "skipped",
+                    message="Container scan skipped because Docker build is disabled.",
+                )
+
+            if pipeline["registry_enabled"]:
+                update_stage(
+                    run,
+                    "registry_push",
+                    "pending",
+                    message="Queued in GitHub Actions.",
+                )
+            else:
+                update_stage(
+                    run,
+                    "registry_push",
+                    "skipped",
+                    message="Registry push disabled for this pipeline.",
+                )
+
+            if pipeline.get("deployment_enabled"):
+                update_stage(
+                    run,
+                    "deployment",
+                    "pending",
+                    message="Queued in GitHub Actions.",
+                )
+            else:
+                update_stage(
+                    run,
+                    "deployment",
+                    "skipped",
+                    message="Deployment disabled for this pipeline.",
+                )
+
+            completed_at = utc_now()
+            run["status"] = "running"
+            pipeline["status"] = "running"
+            pipeline["last_run"] = started_at
+            pipeline["last_run_id"] = run["id"]
+            pipeline["last_scan_id"] = scan["id"] if scan else None
+            pipeline["last_scan_status"] = "completed" if scan else None
+            pipeline["last_security_score"] = security_score
+            pipeline["last_files_scanned"] = result.get("files_scanned", 0)
+            pipeline["last_findings"] = len(all_findings)
+            pipeline["last_error"] = None
+            pipeline["updated_at"] = completed_at
+            pipeline["stages"] = run["stages"]
+
+            save_pipeline_run(run)
+            save_pipeline(pipeline)
+
+            dispatch_github_workflow(
+                repository_url=pipeline["repository_url"],
+                branch=pipeline.get("branch", "main"),
+                pipeline_id=pipeline["id"],
+                run_id=run["id"],
+                docker_enabled=pipeline["docker_enabled"],
+                registry_enabled=pipeline["registry_enabled"],
+                deployment_enabled=pipeline.get("deployment_enabled", False),
+            )
+
+            return jsonify(
+                {
+                    "success": True,
+                    "message": (
+                        "DevSecOps pipeline stages 1-5 completed; "
+                        "container stages queued in GitHub Actions."
+                    ),
+                    "pipeline": pipeline,
+                    "run": run,
+                    "scan": scan,
+                    "findings": run["findings"],
+                }
+            ), 201
+
         # ====================================================
-        # STAGE 6 — DOCKER BUILD
+        # LOCAL EXECUTION: STAGE 6 — DOCKER BUILD
         # ====================================================
 
         if pipeline["docker_enabled"]:
@@ -2675,3 +2947,157 @@ def pipeline_run_details(run_id):
             "run": run,
         }
     )
+
+
+# ============================================================
+# GITHUB ACTIONS STATUS CALLBACK
+# ============================================================
+
+@pipelines_bp.post("/runs/<int:run_id>/github-status")
+def github_status_callback(run_id):
+    """
+    Protected callback endpoint for GitHub Actions workflow to update pipeline run stages.
+    """
+    expected_secret = os.getenv("GITHUB_CALLBACK_SECRET")
+    if not expected_secret:
+        return jsonify({
+            "success": False,
+            "error": "GITHUB_CALLBACK_SECRET is not configured on the server.",
+        }), 500
+
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return jsonify({
+            "success": False,
+            "error": "Missing or invalid authorization header.",
+        }), 401
+
+    token = auth_header[len("Bearer "):].strip()
+    if not hmac.compare_digest(token, expected_secret):
+        return jsonify({
+            "success": False,
+            "error": "Unauthorized.",
+        }), 401
+
+    data = request.get_json(silent=True) or {}
+    stage_id = data.get("stage")
+    status = data.get("status")
+    message = data.get("message", "")
+    details = data.get("details") or {}
+    error_info = data.get("error")
+
+    allowed_stages = {"docker_build", "container_scan", "registry_push", "deployment"}
+    if stage_id not in allowed_stages:
+        return jsonify({
+            "success": False,
+            "error": f"Invalid stage '{stage_id}'. Allowed stages: {', '.join(sorted(allowed_stages))}",
+        }), 400
+
+    allowed_statuses = {"running", "success", "failed", "skipped"}
+    if status not in allowed_statuses:
+        return jsonify({
+            "success": False,
+            "error": f"Invalid status '{status}'. Allowed statuses: {', '.join(sorted(allowed_statuses))}",
+        }), 400
+
+    run = find_run(run_id)
+    if run is None:
+        return jsonify({
+            "success": False,
+            "error": f"Pipeline run {run_id} not found.",
+        }), 404
+
+    pipeline = find_pipeline(run["pipeline_id"])
+
+    stage_found = False
+    for stage in run["stages"]:
+        if stage["id"] == stage_id:
+            stage_found = True
+            stage["status"] = status
+            if message:
+                stage["message"] = message
+            if details:
+                stage["details"] = {**(stage.get("details") or {}), **details}
+            if error_info:
+                stage["error"] = error_info
+
+            if status == "running":
+                stage["started_at"] = stage.get("started_at") or utc_now()
+                stage["error"] = None
+            elif status in ("success", "failed", "skipped"):
+                if not stage.get("started_at"):
+                    stage["started_at"] = utc_now()
+                stage["completed_at"] = utc_now()
+                if stage.get("started_at") and stage.get("completed_at"):
+                    try:
+                        t0 = datetime.fromisoformat(stage["started_at"])
+                        t1 = datetime.fromisoformat(stage["completed_at"])
+                        stage["duration_ms"] = int((t1 - t0).total_seconds() * 1000)
+                    except Exception:
+                        pass
+                if status == "failed" and not stage.get("error"):
+                    stage["error"] = error_info or message or f"{stage.get('name', stage_id)} failed."
+            break
+
+    if not stage_found:
+        return jsonify({
+            "success": False,
+            "error": f"Stage '{stage_id}' not found in pipeline run.",
+        }), 400
+
+    if stage_id == "docker_build" and status == "success":
+        if details.get("image"):
+            run["docker_image"] = details["image"]
+
+    elif stage_id == "registry_push" and status == "success":
+        if details.get("image"):
+            run["registry_image"] = details["image"]
+
+    elif stage_id == "deployment" and status == "success":
+        run["deployment"] = "success"
+
+    if status == "failed":
+        run["status"] = "failed"
+        run["completed_at"] = utc_now()
+        if message and error_info and message != error_info:
+            run["error"] = f"{message} ({error_info})"
+        else:
+            run["error"] = error_info or message or f"Stage '{stage_id}' failed in GitHub Actions."
+        if pipeline:
+            pipeline["status"] = "failed"
+            pipeline["last_error"] = run["error"]
+            pipeline["updated_at"] = utc_now()
+            pipeline["stages"] = run["stages"]
+            save_pipeline(pipeline)
+    else:
+        has_running_or_pending = any(
+            s.get("status") in ("running", "pending")
+            for s in run["stages"]
+        )
+        has_failed = any(
+            s.get("status") == "failed"
+            for s in run["stages"]
+        )
+
+        if not has_running_or_pending and not has_failed:
+            run["status"] = "success"
+            run["completed_at"] = utc_now()
+            run["error"] = None
+            if pipeline:
+                pipeline["status"] = "success"
+                pipeline["last_error"] = None
+                pipeline["updated_at"] = utc_now()
+                pipeline["stages"] = run["stages"]
+                save_pipeline(pipeline)
+        elif pipeline:
+            pipeline["stages"] = run["stages"]
+            pipeline["updated_at"] = utc_now()
+            save_pipeline(pipeline)
+
+    save_pipeline_run(run)
+
+    return jsonify({
+        "success": True,
+        "message": f"Stage '{stage_id}' updated to '{status}'.",
+        "run": run,
+    }), 200

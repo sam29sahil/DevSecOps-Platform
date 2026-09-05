@@ -1,0 +1,302 @@
+name: DevSecOps Pipeline
+
+"on":
+  workflow_dispatch:
+    inputs:
+      repository_url:
+        description: 'Submitted GitHub repository HTTPS URL'
+        required: true
+        type: string
+      branch:
+        description: 'Branch to checkout'
+        required: false
+        default: 'main'
+        type: string
+      pipeline_id:
+        description: 'Pipeline ID'
+        required: true
+        type: string
+      run_id:
+        description: 'Pipeline Run ID'
+        required: true
+        type: string
+      callback_url:
+        description: 'Base URL for Flask status callback'
+        required: false
+        default: ''
+        type: string
+      docker_enabled:
+        description: 'Whether Docker build is enabled'
+        required: false
+        default: 'true'
+        type: string
+      registry_enabled:
+        description: 'Whether AWS ECR registry push is enabled'
+        required: false
+        default: 'false'
+        type: string
+      deployment_enabled:
+        description: 'Whether Render deployment is enabled'
+        required: false
+        default: 'false'
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  devsecops:
+    name: Build, Scan, Push & Deploy
+    runs-on: ubuntu-latest
+
+    env:
+      AWS_REGION: ap-south-1
+      ECR_REPOSITORY: devsecops-platform
+      ECR_REGISTRY: 288418346751.dkr.ecr.ap-south-1.amazonaws.com
+      OIDC_ROLE: arn:aws:iam::288418346751:role/DevSecOpsPlatform-GitHubActions
+      CALLBACK_URL: ${{ inputs.callback_url }}
+      CALLBACK_SECRET: ${{ secrets.GITHUB_CALLBACK_SECRET }}
+      RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
+      RUN_ID: ${{ inputs.run_id }}
+      PIPELINE_ID: ${{ inputs.pipeline_id }}
+
+    steps:
+      - name: Log Pipeline Metadata
+        run: |
+          echo "============================================================"
+          echo " DevSecOps Pipeline Execution"
+          echo " Repository:   ${{ inputs.repository_url }}"
+          echo " Branch:       ${{ inputs.branch }}"
+          echo " Pipeline ID:  ${{ inputs.pipeline_id }}"
+          echo " Run ID:       ${{ inputs.run_id }}"
+          echo " Docker:       ${{ inputs.docker_enabled }}"
+          echo " ECR Push:     ${{ inputs.registry_enabled }}"
+          echo " Deployment:   ${{ inputs.deployment_enabled }}"
+          echo "============================================================"
+
+      - name: Setup Status Callback Utility
+        run: |
+          cat << 'EOF' > /usr/local/bin/send_callback
+          #!/usr/bin/env bash
+          set -e
+
+          STAGE="$1"
+          STATUS="$2"
+          MESSAGE="$3"
+          DETAILS="${4:-{}}"
+          ERROR="${5:-}"
+
+          if [ -z "${CALLBACK_URL}" ] || [ -z "${CALLBACK_SECRET}" ]; then
+            echo "[CALLBACK] Notice: CALLBACK_URL or CALLBACK_SECRET not set. Skipping callback for stage '${STAGE}' (${STATUS})."
+            exit 0
+          fi
+
+          if ! echo "${DETAILS}" | jq empty 2>/dev/null; then
+            DETAILS="{}"
+          fi
+
+          PAYLOAD=$(jq -n \
+            --arg stage "${STAGE}" \
+            --arg status "${STATUS}" \
+            --arg message "${MESSAGE}" \
+            --argjson details "${DETAILS}" \
+            --arg error "${ERROR}" \
+            '{
+              stage: $stage,
+              status: $status,
+              message: $message,
+              details: $details,
+              error: (if $error != "" then $error else null end)
+            }')
+
+          echo "[CALLBACK] Stage: ${STAGE} | Status: ${STATUS} | Run: ${RUN_ID}"
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${CALLBACK_URL}/api/pipelines/runs/${RUN_ID}/github-status" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${CALLBACK_SECRET}" \
+            -d "${PAYLOAD}")
+
+          HTTP_CODE=$(echo "${RESPONSE}" | tail -n1)
+          BODY=$(echo "${RESPONSE}" | sed '$d')
+
+          if [ "${HTTP_CODE}" -ge 200 ] && [ "${HTTP_CODE}" -lt 300 ]; then
+            echo "[CALLBACK] Successfully updated stage '${STAGE}' (HTTP ${HTTP_CODE})."
+          else
+            echo "[CALLBACK] Warning: Server returned HTTP ${HTTP_CODE}: ${BODY}"
+          fi
+          EOF
+          chmod +x /usr/local/bin/send_callback
+
+      - name: Checkout Target Repository
+        run: |
+          echo "Checking out user repository: ${{ inputs.repository_url }} (branch: ${{ inputs.branch }})..."
+          mkdir -p target-repo
+          if git clone --depth 1 --branch "${{ inputs.branch }}" "${{ inputs.repository_url }}" target-repo; then
+            echo "Successfully cloned branch '${{ inputs.branch }}'."
+          else
+            echo "Branch '${{ inputs.branch }}' not found or clone failed; attempting default branch clone..."
+            git clone --depth 1 "${{ inputs.repository_url }}" target-repo
+          fi
+
+      - name: Install Trivy Security Scanner
+        run: |
+          echo "Installing Trivy security scanner..."
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+          trivy --version
+
+      - name: Filesystem Security Scan
+        run: |
+          echo "Running filesystem security check on target repository..."
+          trivy fs --scanners vuln,secret --severity HIGH,CRITICAL target-repo || true
+
+      - name: Stage 6 - Docker Build
+        id: docker_build
+        run: |
+          if [ "${{ inputs.docker_enabled }}" != "true" ]; then
+            echo "Docker build is disabled for this pipeline."
+            send_callback "docker_build" "skipped" "Docker build disabled for this pipeline."
+            send_callback "container_scan" "skipped" "Container scan skipped because Docker build is disabled."
+            send_callback "registry_push" "skipped" "Registry push skipped because Docker build is disabled."
+            send_callback "deployment" "skipped" "Deployment skipped because Docker build is disabled."
+            echo "docker_skipped=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          if [ ! -f "target-repo/Dockerfile" ]; then
+            echo "No Dockerfile found in target repository."
+            send_callback "docker_build" "skipped" "No Dockerfile found in target repository."
+            send_callback "container_scan" "skipped" "No container image available to scan."
+            send_callback "registry_push" "skipped" "No container image available to push."
+            send_callback "deployment" "skipped" "No container image available to deploy."
+            echo "docker_skipped=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          send_callback "docker_build" "running" "Building Docker image in GitHub Actions..."
+
+          cd target-repo
+          COMMIT_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo "latest")
+          IMAGE_TAG="${PIPELINE_ID}-${RUN_ID}-${COMMIT_SHA}"
+          FULL_IMAGE="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+
+          echo "Building image: ${FULL_IMAGE} (tag: ${IMAGE_TAG})..."
+          echo "FULL_IMAGE_NAME=${FULL_IMAGE}" >> $GITHUB_ENV
+          echo "IMAGE_TAG=${IMAGE_TAG}" >> $GITHUB_ENV
+
+          if docker build -t "${FULL_IMAGE}" .; then
+            echo "Docker build completed successfully."
+            send_callback "docker_build" "success" "Docker image built successfully in GitHub Actions." "{\"image\":\"${FULL_IMAGE}\",\"tag\":\"${IMAGE_TAG}\"}"
+          else
+            BUILD_ERR="Docker build failed in GitHub Actions."
+            echo "${BUILD_ERR}"
+            send_callback "docker_build" "failed" "${BUILD_ERR}" "{}" "${BUILD_ERR}"
+            exit 1
+          fi
+
+      - name: Stage 7 - Container Security Scan
+        if: steps.docker_build.outputs.docker_skipped != 'true'
+        run: |
+          send_callback "container_scan" "running" "Scanning container image with Trivy..."
+          echo "Running Trivy image vulnerability scan on ${FULL_IMAGE_NAME}..."
+
+          if trivy image --scanners vuln --severity HIGH,CRITICAL --exit-code 1 "${FULL_IMAGE_NAME}"; then
+            echo "Trivy container scan passed."
+            send_callback "container_scan" "success" "Container security scan passed." "{\"image\":\"${FULL_IMAGE_NAME}\"}"
+          else
+            SCAN_ERR="Container security scan found HIGH or CRITICAL vulnerabilities."
+            echo "${SCAN_ERR}"
+            send_callback "container_scan" "failed" "${SCAN_ERR}" "{}" "${SCAN_ERR}"
+            exit 1
+          fi
+
+      - name: Configure AWS Credentials via OIDC
+        if: steps.docker_build.outputs.docker_skipped != 'true' && inputs.registry_enabled == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::288418346751:role/DevSecOpsPlatform-GitHubActions
+          aws-region: ap-south-1
+
+      - name: Stage 8 - Registry Push
+        if: steps.docker_build.outputs.docker_skipped != 'true'
+        run: |
+          if [ "${{ inputs.registry_enabled }}" != "true" ]; then
+            echo "Registry push disabled for this pipeline."
+            send_callback "registry_push" "skipped" "Registry push disabled for this pipeline."
+            exit 0
+          fi
+
+          send_callback "registry_push" "running" "Pushing container image to AWS ECR..."
+
+          echo "Authenticating with Amazon ECR (${ECR_REGISTRY})..."
+          aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "${ECR_REGISTRY}"
+
+          echo "Pushing ${FULL_IMAGE_NAME} to AWS ECR..."
+          if docker push "${FULL_IMAGE_NAME}"; then
+            echo "Image pushed successfully to AWS ECR."
+            send_callback "registry_push" "success" "Container image pushed to AWS ECR." "{\"image\":\"${FULL_IMAGE_NAME}\"}"
+          else
+            PUSH_ERR="Failed to push container image to AWS ECR."
+            echo "${PUSH_ERR}"
+            send_callback "registry_push" "failed" "${PUSH_ERR}" "{}" "${PUSH_ERR}"
+            exit 1
+          fi
+
+      - name: Stage 9 - Render Deployment
+        if: steps.docker_build.outputs.docker_skipped != 'true'
+        run: |
+          if [ "${{ inputs.deployment_enabled }}" != "true" ]; then
+            echo "Deployment disabled for this pipeline."
+            send_callback "deployment" "skipped" "Deployment disabled for this pipeline."
+            exit 0
+          fi
+
+          if [ -z "${RENDER_DEPLOY_HOOK}" ]; then
+            echo "RENDER_DEPLOY_HOOK secret is not configured in GitHub repository secrets."
+            send_callback "deployment" "skipped" "Render deployment skipped: RENDER_DEPLOY_HOOK secret is not configured."
+            exit 0
+          fi
+
+          send_callback "deployment" "running" "Triggering Render deployment hook..."
+
+          python3 -c "
+          import os, sys, urllib.parse, urllib.request
+
+          hook = os.environ.get('RENDER_DEPLOY_HOOK', '').strip()
+          image = os.environ.get('FULL_IMAGE_NAME', '').strip()
+
+          if not hook:
+              sys.exit('RENDER_DEPLOY_HOOK is empty')
+
+          parsed = urllib.parse.urlsplit(hook)
+          query_params = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+          updated = [(k, v) for k, v in query_params if k != 'imgURL']
+          if image:
+              updated.append(('imgURL', image))
+          new_query = urllib.parse.urlencode(updated)
+
+          target_url = urllib.parse.urlunsplit((
+              parsed.scheme,
+              parsed.netloc,
+              parsed.path,
+              new_query,
+              parsed.fragment,
+          ))
+
+          req = urllib.request.Request(target_url, method='POST')
+          try:
+              with urllib.request.urlopen(req, timeout=30) as resp:
+                  print(f'Render deploy hook response HTTP {resp.status}')
+          except Exception as err:
+              sys.exit(f'Render deployment request failed: {err}')
+          "
+
+          if [ $? -eq 0 ]; then
+            echo "Render deployment triggered successfully."
+            send_callback "deployment" "success" "Render deployment triggered successfully." "{\"image\":\"${FULL_IMAGE_NAME}\"}"
+          else
+            DEPLOY_ERR="Failed to trigger Render deployment."
+            echo "${DEPLOY_ERR}"
+            send_callback "deployment" "failed" "${DEPLOY_ERR}" "{}" "${DEPLOY_ERR}"
+            exit 1
+          fi
