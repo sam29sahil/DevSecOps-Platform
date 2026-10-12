@@ -450,6 +450,16 @@ DEFAULT_STAGES = [
         "description": "Inspect dependency manifests for known package risks.",
     },
     {
+        "id": "project_detection",
+        "name": "Project Detection",
+        "description": "Identify the application type and prepare a supported build configuration.",
+    },
+    {
+        "id": "filesystem_scan",
+        "name": "Filesystem Security Scan",
+        "description": "Scan the submitted repository for dependency vulnerabilities and exposed secrets.",
+    },
+    {
         "id": "secrets",
         "name": "Secret Detection",
         "description": "Search source files for accidentally committed secrets.",
@@ -2375,8 +2385,22 @@ def run_pipeline(pipeline_id):
 
         if execution_mode == "hosted":
             # ====================================================
-            # HOSTED EXECUTION: Hand off Stages 6-9 to GitHub Actions
+            # HOSTED EXECUTION: Hand off build, image scan, push and
+            # deployment stages to GitHub Actions.
             # ====================================================
+
+            update_stage(
+                run,
+                "project_detection",
+                "pending",
+                message="Queued in GitHub Actions.",
+            )
+            update_stage(
+                run,
+                "filesystem_scan",
+                "pending",
+                message="Queued in GitHub Actions.",
+            )
 
             if pipeline["docker_enabled"]:
                 update_stage(
@@ -2476,6 +2500,21 @@ def run_pipeline(pipeline_id):
                     "findings": run["findings"],
                 }
             ), 201
+
+        # The project detector and Trivy filesystem scan run in the
+        # hosted workflow. Mark them explicitly skipped for local mode.
+        update_stage(
+            run,
+            "project_detection",
+            "skipped",
+            message="Automatic project detection runs in hosted mode.",
+        )
+        update_stage(
+            run,
+            "filesystem_scan",
+            "skipped",
+            message="Trivy filesystem scanning runs in hosted mode.",
+        )
 
         # ====================================================
         # LOCAL EXECUTION: STAGE 6 — DOCKER BUILD
@@ -3170,7 +3209,14 @@ def github_status_callback(run_id):
     details = data.get("details") or {}
     error_info = data.get("error")
 
-    allowed_stages = {"docker_build", "container_scan", "registry_push", "deployment"}
+    allowed_stages = {
+        "project_detection",
+        "filesystem_scan",
+        "docker_build",
+        "container_scan",
+        "registry_push",
+        "deployment",
+    }
     if stage_id not in allowed_stages:
         return jsonify({
             "success": False,
