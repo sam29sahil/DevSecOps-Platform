@@ -12,6 +12,7 @@ from app.routes.pipelines import (
     get_pipeline_run,
     get_pipeline,
 )
+from app.services.render_deployer import _service_name
 
 
 # ============================================================
@@ -56,6 +57,25 @@ def test_pipeline(test_project):
         deployment_enabled=True,
     )
     return pipeline
+
+
+# ============================================================
+# RENDER SERVICE NAMING
+# ============================================================
+
+def test_render_service_name_is_stable_per_repository():
+    first = _service_name("https://github.com/ExampleOwner/sample-app.git")
+    second = _service_name("https://github.com/exampleowner/SAMPLE-APP")
+    other = _service_name("https://github.com/exampleowner/another-app")
+
+    assert first == second
+    assert first.startswith("dsp-sample-app-")
+    assert first != other
+
+
+def test_render_service_name_rejects_non_github_urls():
+    with pytest.raises(RuntimeError):
+        _service_name("https://example.com/owner/repository")
 
 
 # ============================================================
@@ -256,6 +276,19 @@ def test_callback_updates_pipeline_run_stages(client, test_pipeline):
             "Content-Type": "application/json",
         }
 
+        # Hosted-only project analysis and filesystem scan must finish before build.
+        for stage_id in ("project_detection", "filesystem_scan"):
+            stage_response = client.post(
+                f"/api/pipelines/runs/{run_id}/github-status",
+                headers=headers,
+                json={
+                    "stage": stage_id,
+                    "status": "success",
+                    "message": f"{stage_id} passed.",
+                },
+            )
+            assert stage_response.status_code == 200
+
         # 1. Update docker_build -> running
         res1 = client.post(
             f"/api/pipelines/runs/{run_id}/github-status",
@@ -323,7 +356,8 @@ def test_callback_updates_pipeline_run_stages(client, test_pipeline):
             json={
                 "stage": "deployment",
                 "status": "success",
-                "message": "Render deployment triggered successfully.",
+                "message": "Render deployment completed successfully.",
+                "details": {"service_url": "https://dsp-test-app.onrender.com", "url": "https://dsp-test-app.onrender.com"},
             },
         )
         assert res5.status_code == 200
@@ -333,6 +367,8 @@ def test_callback_updates_pipeline_run_stages(client, test_pipeline):
         # Entire run should now be marked terminal success
         assert run_data["status"] == "success"
         assert pipeline_data["status"] == "success"
+        assert run_data["deployment_url"] == "https://dsp-test-app.onrender.com"
+        assert pipeline_data["deployment_url"] == "https://dsp-test-app.onrender.com"
 
 
 def test_callback_handles_failure(client, test_pipeline):
@@ -396,6 +432,8 @@ def test_workflow_yaml_structure():
     assert "arn:aws:iam::288418346751:role/DevSecOpsPlatform-GitHubActions" in content
     assert "288418346751.dkr.ecr.ap-south-1.amazonaws.com" in content
     assert "secrets.DEVSECOPS_CALLBACK_SECRET" in content
-    assert "secrets.RENDER_DEPLOY_HOOK" in content
+    assert "render-deploy-status" in content
+    assert "Detect Project & Prepare Dockerfile" in content
+    assert "secrets.RENDER_DEPLOY_HOOK" not in content
 
 
