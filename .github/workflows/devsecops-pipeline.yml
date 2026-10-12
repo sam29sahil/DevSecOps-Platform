@@ -145,15 +145,27 @@ jobs:
           trivy --version
 
       - name: Filesystem Security Scan
+        shell: bash
         run: |
           echo "Running filesystem security check on target repository..."
-          trivy fs --scanners vuln,secret --severity HIGH,CRITICAL target-repo || true
+          send_callback "filesystem_scan" "running" "Scanning dependencies and repository secrets with Trivy..."
+          if trivy fs --scanners vuln,secret --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 target-repo; then
+            send_callback "filesystem_scan" "success" "Trivy filesystem security scan passed."
+          else
+            SCAN_ERR="Filesystem security gate failed: Trivy found HIGH/CRITICAL issues or could not complete the scan."
+            send_callback "filesystem_scan" "failed" "${SCAN_ERR}" "{}" "${SCAN_ERR}"
+            exit 1
+          fi
 
       - name: Detect Project & Prepare Dockerfile
         id: project_detect
+        if: inputs.docker_enabled == 'true'
         shell: bash
         run: |
           set -euo pipefail
+          DETECTION_COMPLETED=false
+          trap 'if [ "${DETECTION_COMPLETED:-false}" != "true" ]; then DETECT_ERR="Automatic project detection or Dockerfile generation failed."; send_callback "project_detection" "failed" "${DETECT_ERR}" "{}" "${DETECT_ERR}" || true; fi' EXIT
+          send_callback "project_detection" "running" "Detecting the application framework and preparing a build configuration..."
           ROOT="target-repo"
 
           if [ -f "$ROOT/Dockerfile" ]; then
@@ -244,6 +256,13 @@ jobs:
           echo "Detected application type: $APP_TYPE"
           echo "APP_TYPE=$APP_TYPE" >> "$GITHUB_ENV"
           echo "app_type=$APP_TYPE" >> "$GITHUB_OUTPUT"
+          DETECTION_COMPLETED=true
+          send_callback "project_detection" "success" "Detected application type: ${APP_TYPE}." "{\\"app_type\\":\\"${APP_TYPE}\\"}"
+
+      - name: Skip Project Detection when Docker is disabled
+        if: inputs.docker_enabled != 'true'
+        run: |
+          send_callback "project_detection" "skipped" "Docker build is disabled; automatic build detection was skipped."
 
       - name: Stage 6 - Docker Build
         id: docker_build
@@ -281,7 +300,7 @@ jobs:
 
           if docker build --platform linux/amd64 -t "${FULL_IMAGE}" .; then
             echo "Docker build completed successfully."
-            send_callback "docker_build" "success" "Docker image built successfully in GitHub Actions." "{\"image\":\"${FULL_IMAGE}\",\"tag\":\"${IMAGE_TAG}\"}"
+            send_callback "docker_build" "success" "Detected ${APP_TYPE:-docker}; application image built successfully." "{\"image\":\"${FULL_IMAGE}\",\"tag\":\"${IMAGE_TAG}\"}"
           else
             BUILD_ERR="Docker build failed in GitHub Actions."
             echo "${BUILD_ERR}"
