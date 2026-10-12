@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 
 import DashboardLayout from "../layouts/DashboardLayout";
 
@@ -7,9 +7,14 @@ import {
   getProjects,
   createProject,
   deleteProject,
+  getPipelines,
+  createPipeline,
+  updatePipeline,
+  runPipeline,
 } from "../services/api";
 
 function Projects() {
+  const navigate = useNavigate();
   const [projects, setProjects] = useState([]);
 
   const [loading, setLoading] = useState(true);
@@ -19,6 +24,7 @@ function Projects() {
 
   const [creating, setCreating] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
+  const [deployingId, setDeployingId] = useState(null);
 
   /* =========================================================
      SEARCH / FILTER
@@ -163,6 +169,75 @@ function Projects() {
       );
     } finally {
       setCreating(false);
+    }
+  }
+
+  /* =========================================================
+     ONE-CLICK DEPLOY
+  ========================================================= */
+
+  async function handleDeployProject(project) {
+    if (!project?.repository_url) {
+      setError("Add a GitHub repository URL to this project before deploying.");
+      return;
+    }
+
+    try {
+      setDeployingId(project.id);
+      setError("");
+
+      const pipelineResponse = await getPipelines();
+      if (!pipelineResponse?.success) {
+        throw new Error(pipelineResponse?.error || "Could not load existing pipelines.");
+      }
+
+      const normalizeRepo = (url) =>
+        String(url || "").trim().toLowerCase().replace(/\\.git$/, "").replace(/\\/$/, "");
+
+      const existing = (pipelineResponse.pipelines || []).find((pipeline) =>
+        Number(pipeline.project_id) === Number(project.id) ||
+        normalizeRepo(pipeline.repository_url) === normalizeRepo(project.repository_url)
+      );
+
+      const config = {
+        name: existing?.name || `${project.name || "Project"} auto-deploy`,
+        description: `Automatic security scan and Render deployment for ${project.name || "project"}.`,
+        repository_url: project.repository_url.trim(),
+        branch: project.branch || "main",
+        project_id: Number(project.id),
+        quality_gate_score: existing?.quality_gate_score ?? 70,
+        fail_on_high: true,
+        docker_enabled: true,
+        registry_enabled: true,
+        deployment_enabled: true,
+      };
+
+      let pipeline;
+      if (existing) {
+        const updated = await updatePipeline(existing.id, config);
+        if (!updated?.success) {
+          throw new Error(updated?.error || "Could not configure the deployment pipeline.");
+        }
+        pipeline = updated.pipeline;
+      } else {
+        const created = await createPipeline(config);
+        if (!created?.success) {
+          throw new Error(created?.error || "Could not create the deployment pipeline.");
+        }
+        pipeline = created.pipeline;
+      }
+
+      const started = await runPipeline(pipeline.id);
+      if (!started?.success) {
+        throw new Error(started?.error || "Pipeline could not start.");
+      }
+
+      navigate("/pipelines");
+    } catch (err) {
+      console.error("One-click deployment error:", err);
+      setError(err.message || "Could not start deployment.");
+    } finally {
+      setDeployingId(null);
     }
   }
 
@@ -821,6 +896,16 @@ function Projects() {
                     {/* CARD ACTIONS */}
 
                     <div className="project-card-actions">
+
+                      <button
+                        type="button"
+                        className="primary-button"
+                        onClick={() => handleDeployProject(project)}
+                        disabled={!project.repository_url || deployingId === project.id}
+                        title={!project.repository_url ? "Add a GitHub repository URL first" : "Run security checks and deploy this repository"}
+                      >
+                        {deployingId === project.id ? "Starting..." : "Deploy to Render"}
+                      </button>
 
                       <Link
                         to={`/projects/${project.id}`}
