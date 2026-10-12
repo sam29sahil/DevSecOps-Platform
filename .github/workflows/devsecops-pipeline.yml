@@ -57,7 +57,6 @@ jobs:
       OIDC_ROLE: arn:aws:iam::288418346751:role/DevSecOpsPlatform-GitHubActions
       CALLBACK_URL: ${{ inputs.callback_url }}
       CALLBACK_SECRET: ${{ secrets.DEVSECOPS_CALLBACK_SECRET }}
-      RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
       RUN_ID: ${{ inputs.run_id }}
       PIPELINE_ID: ${{ inputs.pipeline_id }}
 
@@ -150,6 +149,102 @@ jobs:
           echo "Running filesystem security check on target repository..."
           trivy fs --scanners vuln,secret --severity HIGH,CRITICAL target-repo || true
 
+      - name: Detect Project & Prepare Dockerfile
+        id: project_detect
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="target-repo"
+
+          if [ -f "$ROOT/Dockerfile" ]; then
+            APP_TYPE="docker"
+            echo "Using the repository's existing Dockerfile."
+          elif [ -f "$ROOT/package.json" ]; then
+            HAS_START=$(node -e "const p=require('./$ROOT/package.json'); process.stdout.write(p.scripts?.start ? 'yes' : 'no')")
+            HAS_BUILD=$(node -e "const p=require('./$ROOT/package.json'); process.stdout.write(p.scripts?.build ? 'yes' : 'no')")
+            IS_VITE=$(grep -q '"vite"' "$ROOT/package.json" && echo yes || echo no)
+
+            if [ "$HAS_BUILD" = "yes" ] && [ "$IS_VITE" = "yes" ] && [ "$HAS_START" = "no" ]; then
+              APP_TYPE="vite-static"
+              cat > "$ROOT/Dockerfile" <<'DOCKERFILE'
+          FROM node:20-alpine AS build
+          WORKDIR /app
+          COPY package*.json ./
+          RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
+          COPY . .
+          RUN npm run build
+          FROM nginx:alpine
+          COPY --from=build /app/dist /usr/share/nginx/html
+          RUN sed -i 's/listen       80;/listen       10000;/' /etc/nginx/conf.d/default.conf
+          EXPOSE 10000
+          DOCKERFILE
+            elif [ "$HAS_START" = "yes" ]; then
+              APP_TYPE="node"
+              cat > "$ROOT/Dockerfile" <<'DOCKERFILE'
+          FROM node:20-alpine
+          WORKDIR /app
+          COPY package*.json ./
+          RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
+          COPY . .
+          RUN npm run build --if-present && npm prune --omit=dev
+          ENV NODE_ENV=production
+          EXPOSE 10000
+          CMD ["sh", "-c", "npm start"]
+          DOCKERFILE
+            else
+              echo "::error::Node.js project detected, but a supported start script or Vite build script was not found."
+              exit 1
+            fi
+          elif [ -f "$ROOT/requirements.txt" ]; then
+            if grep -qiE '(^|[[:space:]])fastapi([=<>~![:space:]]|$)' "$ROOT/requirements.txt"; then
+              APP_TYPE="fastapi"
+              if [ -f "$ROOT/app/main.py" ]; then MODULE="app.main:app"
+              elif [ -f "$ROOT/main.py" ]; then MODULE="main:app"
+              else
+                echo "::error::FastAPI detected, but app/main.py or main.py was not found."
+                exit 1
+              fi
+              cat > "$ROOT/Dockerfile" <<DOCKERFILE
+          FROM python:3.12-slim
+          WORKDIR /app
+          COPY requirements.txt ./
+          RUN pip install --no-cache-dir -r requirements.txt uvicorn[standard]
+          COPY . .
+          EXPOSE 10000
+          CMD ["sh", "-c", "uvicorn $MODULE --host 0.0.0.0 --port ${PORT:-10000}"]
+          DOCKERFILE
+            elif grep -qiE '(^|[[:space:]])flask([=<>~![:space:]]|$)' "$ROOT/requirements.txt"; then
+              APP_TYPE="flask"
+              if [ -f "$ROOT/app.py" ]; then MODULE="app:app"
+              elif [ -f "$ROOT/run.py" ]; then MODULE="run:app"
+              elif [ -f "$ROOT/main.py" ]; then MODULE="main:app"
+              elif [ -f "$ROOT/app/__init__.py" ] && grep -q 'create_app' "$ROOT/app/__init__.py"; then MODULE="app:create_app()"
+              else
+                echo "::error::Flask detected, but no supported app.py, run.py, main.py, or app factory was found."
+                exit 1
+              fi
+              cat > "$ROOT/Dockerfile" <<DOCKERFILE
+          FROM python:3.12-slim
+          WORKDIR /app
+          COPY requirements.txt ./
+          RUN pip install --no-cache-dir -r requirements.txt gunicorn
+          COPY . .
+          EXPOSE 10000
+          CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:${PORT:-10000} $MODULE"]
+          DOCKERFILE
+            else
+              echo "::error::Python dependencies detected, but this first automatic builder supports Flask and FastAPI. Add a Dockerfile for other Python frameworks."
+              exit 1
+            fi
+          else
+            echo "::error::Could not detect a supported application. Add a Dockerfile, a Node package.json with a start script, a Vite build, or a Python requirements.txt for Flask/FastAPI."
+            exit 1
+          fi
+
+          echo "Detected application type: $APP_TYPE"
+          echo "APP_TYPE=$APP_TYPE" >> "$GITHUB_ENV"
+          echo "app_type=$APP_TYPE" >> "$GITHUB_OUTPUT"
+
       - name: Stage 6 - Docker Build
         id: docker_build
         run: |
@@ -184,7 +279,7 @@ jobs:
           echo "FULL_IMAGE_NAME=${FULL_IMAGE}" >> $GITHUB_ENV
           echo "IMAGE_TAG=${IMAGE_TAG}" >> $GITHUB_ENV
 
-          if docker build -t "${FULL_IMAGE}" .; then
+          if docker build --platform linux/amd64 -t "${FULL_IMAGE}" .; then
             echo "Docker build completed successfully."
             send_callback "docker_build" "success" "Docker image built successfully in GitHub Actions." "{\"image\":\"${FULL_IMAGE}\",\"tag\":\"${IMAGE_TAG}\"}"
           else
@@ -242,61 +337,75 @@ jobs:
             exit 1
           fi
 
-      - name: Stage 9 - Render Deployment
+      - name: Stage 9 - Automatic Render Deployment
         if: steps.docker_build.outputs.docker_skipped != 'true'
+        shell: bash
         run: |
+          set -euo pipefail
+
           if [ "${{ inputs.deployment_enabled }}" != "true" ]; then
             echo "Deployment disabled for this pipeline."
             send_callback "deployment" "skipped" "Deployment disabled for this pipeline."
             exit 0
           fi
 
-          if [ -z "${RENDER_DEPLOY_HOOK}" ]; then
-            echo "RENDER_DEPLOY_HOOK secret is not configured in GitHub repository secrets."
-            send_callback "deployment" "skipped" "Render deployment skipped: RENDER_DEPLOY_HOOK secret is not configured."
-            exit 0
-          fi
-
-          send_callback "deployment" "running" "Triggering Render deployment hook..."
-
-          python3 -c "
-          import os, sys, urllib.parse, urllib.request
-
-          hook = os.environ.get('RENDER_DEPLOY_HOOK', '').strip()
-          image = os.environ.get('FULL_IMAGE_NAME', '').strip()
-
-          if not hook:
-              sys.exit('RENDER_DEPLOY_HOOK is empty')
-
-          parsed = urllib.parse.urlsplit(hook)
-          query_params = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
-          updated = [(k, v) for k, v in query_params if k != 'imgURL']
-          if image:
-              updated.append(('imgURL', image))
-          new_query = urllib.parse.urlencode(updated)
-
-          target_url = urllib.parse.urlunsplit((
-              parsed.scheme,
-              parsed.netloc,
-              parsed.path,
-              new_query,
-              parsed.fragment,
-          ))
-
-          req = urllib.request.Request(target_url, method='POST')
-          try:
-              with urllib.request.urlopen(req, timeout=30) as resp:
-                  print(f'Render deploy hook response HTTP {resp.status}')
-          except Exception as err:
-              sys.exit(f'Render deployment request failed: {err}')
-          "
-
-          if [ $? -eq 0 ]; then
-            echo "Render deployment triggered successfully."
-            send_callback "deployment" "success" "Render deployment triggered successfully." "{\"image\":\"${FULL_IMAGE_NAME}\"}"
-          else
-            DEPLOY_ERR="Failed to trigger Render deployment."
-            echo "${DEPLOY_ERR}"
+          if [ "${{ inputs.registry_enabled }}" != "true" ]; then
+            DEPLOY_ERR="Automatic Render deployment requires AWS ECR push to be enabled."
             send_callback "deployment" "failed" "${DEPLOY_ERR}" "{}" "${DEPLOY_ERR}"
             exit 1
           fi
+
+          send_callback "deployment" "running" "Creating or reusing a Render service for the submitted repository..."
+
+          if ! DEPLOY_JSON=$(curl -fsS -X POST "${CALLBACK_URL}/api/pipelines/runs/${RUN_ID}/render-deploy" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${CALLBACK_SECRET}" \
+            -d "$(jq -n --arg image "${FULL_IMAGE_NAME}" '{image_url:$image}')"); then
+            DEPLOY_ERR="Backend could not start the automatic Render deployment. Check RENDER_API_KEY, RENDER_OWNER_ID, and ECR access in backend environment variables."
+            send_callback "deployment" "failed" "${DEPLOY_ERR}" "{}" "${DEPLOY_ERR}"
+            exit 1
+          fi
+
+          echo "${DEPLOY_JSON}" | jq -e '.success == true' >/dev/null || {
+            DEPLOY_ERR=$(echo "${DEPLOY_JSON}" | jq -r '.error // "Render deployment could not be started."')
+            send_callback "deployment" "failed" "${DEPLOY_ERR}" "{}" "${DEPLOY_ERR}"
+            exit 1
+          }
+
+          echo "Render accepted the deployment. Waiting for it to become live..."
+          for attempt in $(seq 1 90); do
+            if STATUS_JSON=$(curl -fsS "${CALLBACK_URL}/api/pipelines/runs/${RUN_ID}/render-deploy-status" \
+              -H "Authorization: Bearer ${CALLBACK_SECRET}"); then
+              STATUS=$(echo "${STATUS_JSON}" | jq -r '.status // "unknown"')
+              IS_LIVE=$(echo "${STATUS_JSON}" | jq -r '.success // false')
+              IS_TERMINAL=$(echo "${STATUS_JSON}" | jq -r '.terminal // false')
+              APP_URL=$(echo "${STATUS_JSON}" | jq -r '.service_url // empty')
+
+              if [ "${IS_LIVE}" = "true" ] && [ -n "${APP_URL}" ]; then
+                DETAILS=$(jq -n \
+                  --arg url "${APP_URL}" \
+                  --arg service_id "$(echo "${STATUS_JSON}" | jq -r '.service_id // empty')" \
+                  --arg deploy_id "$(echo "${STATUS_JSON}" | jq -r '.deploy_id // empty')" \
+                  --arg image "${FULL_IMAGE_NAME}" \
+                  --arg app_type "${APP_TYPE:-docker}" \
+                  '{url:$url,service_url:$url,service_id:$service_id,deploy_id:$deploy_id,image:$image,app_type:$app_type}')
+                send_callback "deployment" "success" "Application is live at ${APP_URL}" "${DETAILS}"
+                echo "Deployment successful: ${APP_URL}"
+                exit 0
+              fi
+
+              if [ "${IS_TERMINAL}" = "true" ]; then
+                DEPLOY_ERR="Render deployment ended with status: ${STATUS}"
+                send_callback "deployment" "failed" "${DEPLOY_ERR}" "${STATUS_JSON}" "${DEPLOY_ERR}"
+                exit 1
+              fi
+              echo "Render deployment status: ${STATUS} (attempt ${attempt}/90)"
+            else
+              echo "Render status check failed temporarily (attempt ${attempt}/90)."
+            fi
+            sleep 10
+          done
+
+          DEPLOY_ERR="Timed out waiting for Render to report a live deployment after 15 minutes."
+          send_callback "deployment" "failed" "${DEPLOY_ERR}" "{}" "${DEPLOY_ERR}"
+          exit 1
