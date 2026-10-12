@@ -228,16 +228,16 @@ function Dashboard() {
     return [...pipelines]
       .sort((a, b) => {
         const dateA = new Date(
-          a.created_at ||
-            a.updated_at ||
-            a.started_at ||
+          a.updated_at ||
+            a.last_run ||
+            a.created_at ||
             0
         ).getTime();
 
         const dateB = new Date(
-          b.created_at ||
-            b.updated_at ||
-            b.started_at ||
+          b.updated_at ||
+            b.last_run ||
+            b.created_at ||
             0
         ).getTime();
 
