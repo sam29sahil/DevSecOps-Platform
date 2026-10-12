@@ -95,15 +95,21 @@ def _ecr_password():
         account_id = os.getenv("AWS_ACCOUNT_ID", "").strip()
         if account_id:
             registry = f"{account_id}.dkr.ecr.{region}.amazonaws.com"
-    if not registry:
-        raise RuntimeError("CONTAINER_REGISTRY must be configured for Render ECR deployments.")
-
     try:
         client = boto3.client("ecr", region_name=region)
         response = client.get_authorization_token()
         entries = response.get("authorizationData") or []
         if not entries or not entries[0].get("authorizationToken"):
             raise RuntimeError("AWS ECR did not return an authorization token.")
+        if not registry:
+            proxy_endpoint = str(entries[0].get("proxyEndpoint") or "").strip()
+            if proxy_endpoint.startswith("https://"):
+                registry = proxy_endpoint[len("https://"):]
+            elif proxy_endpoint.startswith("http://"):
+                registry = proxy_endpoint[len("http://"):]
+            registry = registry.rstrip("/")
+        if not registry:
+            raise RuntimeError("Could not determine the AWS ECR registry host.")
         decoded = base64.b64decode(entries[0]["authorizationToken"]).decode("utf-8")
         username, separator, password = decoded.partition(":")
         if not separator or not username or not password:
