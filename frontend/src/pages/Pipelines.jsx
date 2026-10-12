@@ -986,6 +986,15 @@ export default function Pipelines() {
 
                   </div>
 
+                  {pipeline.deployment_url && (
+                    <div className="pipeline-deployment-link">
+                      <span>Live deployment</span>
+                      <a href={pipeline.deployment_url} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>
+                        Open application ↗
+                      </a>
+                    </div>
+                  )}
+
                   <div className="pipeline-divider" />
 
                   <div className="pipeline-info-row">
@@ -1178,6 +1187,7 @@ export default function Pipelines() {
                     <th>Started</th>
                     <th>Scan</th>
                     <th>Findings</th>
+                    <th>Deployment</th>
                   </tr>
                 </thead>
 
@@ -1214,6 +1224,16 @@ export default function Pipelines() {
                         {run.findings ??
                           run.last_findings ??
                           0}
+                      </td>
+
+                      <td>
+                        {run.deployment === "success" && run.deployment_url ? (
+                          <a href={run.deployment_url} target="_blank" rel="noreferrer">
+                            Open app ↗
+                          </a>
+                        ) : (
+                          run.deployment || "—"
+                        )}
                       </td>
 
                     </tr>
