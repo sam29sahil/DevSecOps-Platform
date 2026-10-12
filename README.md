@@ -756,7 +756,7 @@ Keep `GITHUB_CALLBACK_SECRET` on the backend and the matching `DEVSECOPS_CALLBAC
 - Vite static frontends with a `build` script.
 - Flask and FastAPI applications with a `requirements.txt` and a recognized application entry point.
 
-Other frameworks, monorepos, apps requiring unconfigured secrets, and apps needing managed databases still need project-specific configuration or a Dockerfile. Detection is deterministic; it does not execute project code just to identify the framework.
+Other frameworks, monorepos, apps requiring unconfigured secrets, and apps needing managed databases still need project-specific configuration or a Dockerfile. The current GitHub Actions checkout supports public repositories; private repositories need a separately secured checkout credential. Detection is deterministic; it does not execute project code just to identify the framework.
 
 ### Deployment behavior and cost controls
 
