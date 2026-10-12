@@ -256,9 +256,11 @@ def start_render_deployment(image_url, repository_url):
             "autoDeployTrigger": "off",
             "image": {
                 "imagePath": image_url,
+                "ownerId": owner_id,
                 "registryCredentialId": credential_id,
             },
             "serviceDetails": {
+                "runtime": "docker",
                 "plan": plan,
                 "region": image_region,
             },
