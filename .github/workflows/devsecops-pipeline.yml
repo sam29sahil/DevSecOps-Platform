@@ -139,12 +139,14 @@ jobs:
           fi
 
       - name: Install Trivy Security Scanner
+        id: install_trivy
         run: |
           echo "Installing Trivy security scanner..."
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
           trivy --version
 
       - name: Filesystem Security Scan
+        id: filesystem_scan
         shell: bash
         run: |
           echo "Running filesystem security check on target repository..."
@@ -153,6 +155,7 @@ jobs:
             send_callback "filesystem_scan" "success" "Trivy filesystem security scan passed."
           else
             SCAN_ERR="Filesystem security gate failed: Trivy found HIGH/CRITICAL issues or could not complete the scan."
+            echo "callback_reported=true" >> "$GITHUB_OUTPUT"
             send_callback "filesystem_scan" "failed" "${SCAN_ERR}" "{}" "${SCAN_ERR}"
             exit 1
           fi
@@ -164,7 +167,7 @@ jobs:
         run: |
           set -euo pipefail
           DETECTION_COMPLETED=false
-          trap 'if [ "${DETECTION_COMPLETED:-false}" != "true" ]; then DETECT_ERR="Automatic project detection or Dockerfile generation failed."; send_callback "project_detection" "failed" "${DETECT_ERR}" "{}" "${DETECT_ERR}" || true; fi' EXIT
+          trap 'if [ "${DETECTION_COMPLETED:-false}" != "true" ]; then DETECT_ERR="Automatic project detection or Dockerfile generation failed."; echo "callback_reported=true" >> "$GITHUB_OUTPUT"; send_callback "project_detection" "failed" "${DETECT_ERR}" "{}" "${DETECT_ERR}" || true; fi' EXIT
           send_callback "project_detection" "running" "Detecting the application framework and preparing a build configuration..."
           ROOT="target-repo"
 
@@ -304,11 +307,13 @@ jobs:
           else
             BUILD_ERR="Docker build failed in GitHub Actions."
             echo "${BUILD_ERR}"
+            echo "callback_reported=true" >> "$GITHUB_OUTPUT"
             send_callback "docker_build" "failed" "${BUILD_ERR}" "{}" "${BUILD_ERR}"
             exit 1
           fi
 
       - name: Stage 7 - Container Security Scan
+        id: container_scan
         if: steps.docker_build.outputs.docker_skipped != 'true'
         run: |
           send_callback "container_scan" "running" "Scanning container image with Trivy..."
@@ -320,6 +325,7 @@ jobs:
           else
             SCAN_ERR="Container security scan found HIGH or CRITICAL vulnerabilities."
             echo "${SCAN_ERR}"
+            echo "callback_reported=true" >> "$GITHUB_OUTPUT"
             send_callback "container_scan" "failed" "${SCAN_ERR}" "{}" "${SCAN_ERR}"
             exit 1
           fi
@@ -332,6 +338,7 @@ jobs:
           aws-region: ap-south-1
 
       - name: Stage 8 - Registry Push
+        id: registry_push
         if: steps.docker_build.outputs.docker_skipped != 'true'
         run: |
           if [ "${{ inputs.registry_enabled }}" != "true" ]; then
@@ -343,7 +350,14 @@ jobs:
           send_callback "registry_push" "running" "Pushing container image to AWS ECR..."
 
           echo "Authenticating with Amazon ECR (${ECR_REGISTRY})..."
-          aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "${ECR_REGISTRY}"
+          if aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "${ECR_REGISTRY}"; then
+            echo "ECR authentication succeeded."
+          else
+            PUSH_ERR="Failed to authenticate with AWS ECR."
+            echo "callback_reported=true" >> "$GITHUB_OUTPUT"
+            send_callback "registry_push" "failed" "${PUSH_ERR}" "{}" "${PUSH_ERR}"
+            exit 1
+          fi
 
           echo "Pushing ${FULL_IMAGE_NAME} to AWS ECR..."
           if docker push "${FULL_IMAGE_NAME}"; then
@@ -352,11 +366,13 @@ jobs:
           else
             PUSH_ERR="Failed to push container image to AWS ECR."
             echo "${PUSH_ERR}"
+            echo "callback_reported=true" >> "$GITHUB_OUTPUT"
             send_callback "registry_push" "failed" "${PUSH_ERR}" "{}" "${PUSH_ERR}"
             exit 1
           fi
 
       - name: Stage 9 - Automatic Render Deployment
+        id: render_deploy
         if: steps.docker_build.outputs.docker_skipped != 'true'
         shell: bash
         run: |
@@ -370,6 +386,7 @@ jobs:
 
           if [ "${{ inputs.registry_enabled }}" != "true" ]; then
             DEPLOY_ERR="Automatic Render deployment requires AWS ECR push to be enabled."
+            echo "callback_reported=true" >> "$GITHUB_OUTPUT"
             send_callback "deployment" "failed" "${DEPLOY_ERR}" "{}" "${DEPLOY_ERR}"
             exit 1
           fi
@@ -381,12 +398,14 @@ jobs:
             -H "Authorization: Bearer ${CALLBACK_SECRET}" \
             -d "$(jq -n --arg image "${FULL_IMAGE_NAME}" '{image_url:$image}')"); then
             DEPLOY_ERR="Backend could not start the automatic Render deployment. Check RENDER_API_KEY, RENDER_OWNER_ID, and ECR access in backend environment variables."
+            echo "callback_reported=true" >> "$GITHUB_OUTPUT"
             send_callback "deployment" "failed" "${DEPLOY_ERR}" "{}" "${DEPLOY_ERR}"
             exit 1
           fi
 
           echo "${DEPLOY_JSON}" | jq -e '.success == true' >/dev/null || {
             DEPLOY_ERR=$(echo "${DEPLOY_JSON}" | jq -r '.error // "Render deployment could not be started."')
+            echo "callback_reported=true" >> "$GITHUB_OUTPUT"
             send_callback "deployment" "failed" "${DEPLOY_ERR}" "{}" "${DEPLOY_ERR}"
             exit 1
           }
@@ -415,6 +434,7 @@ jobs:
 
               if [ "${IS_TERMINAL}" = "true" ]; then
                 DEPLOY_ERR="Render deployment ended with status: ${STATUS}"
+                echo "callback_reported=true" >> "$GITHUB_OUTPUT"
                 send_callback "deployment" "failed" "${DEPLOY_ERR}" "${STATUS_JSON}" "${DEPLOY_ERR}"
                 exit 1
               fi
@@ -428,3 +448,10 @@ jobs:
           DEPLOY_ERR="Timed out waiting for Render to report a live deployment after 15 minutes."
           send_callback "deployment" "failed" "${DEPLOY_ERR}" "{}" "${DEPLOY_ERR}"
           exit 1
+
+      - name: Report unexpected hosted workflow failure
+        if: failure() && steps.filesystem_scan.outputs.callback_reported != 'true' && steps.project_detect.outputs.callback_reported != 'true' && steps.docker_build.outputs.callback_reported != 'true' && steps.container_scan.outputs.callback_reported != 'true' && steps.registry_push.outputs.callback_reported != 'true' && steps.render_deploy.outputs.callback_reported != 'true'
+        shell: bash
+        run: |
+          DEPLOY_ERR="GitHub Actions failed before a stage could report its error. Inspect the workflow logs."
+          send_callback "deployment" "failed" "${DEPLOY_ERR}" "{}" "${DEPLOY_ERR}"
