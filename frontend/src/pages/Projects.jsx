@@ -192,7 +192,7 @@ function Projects() {
       }
 
       const normalizeRepo = (url) =>
-        String(url || "").trim().toLowerCase().replace(/\\.git$/, "").replace(/\\/$/, "");
+        String(url || "").trim().toLowerCase().replace(/\.git$/, "").replace(/\/$/, "");
 
       const existing = (pipelineResponse.pipelines || []).find((pipeline) =>
         Number(pipeline.project_id) === Number(project.id) ||
