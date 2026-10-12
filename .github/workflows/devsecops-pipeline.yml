@@ -174,7 +174,7 @@ jobs:
           elif [ -f "$ROOT/package.json" ]; then
             HAS_START=$(node -e "const p=require('./$ROOT/package.json'); process.stdout.write(p.scripts?.start ? 'yes' : 'no')")
             HAS_BUILD=$(node -e "const p=require('./$ROOT/package.json'); process.stdout.write(p.scripts?.build ? 'yes' : 'no')")
-            IS_VITE=$(grep -q '"vite"' "$ROOT/package.json" && echo yes || echo no)
+            IS_VITE=$(grep -qi '"vite"' "$ROOT/package.json" && echo yes || echo no)
 
             if [ "$HAS_BUILD" = "yes" ] && [ "$IS_VITE" = "yes" ] && [ "$HAS_START" = "no" ]; then
               APP_TYPE="vite-static"
@@ -187,7 +187,7 @@ jobs:
           RUN npm run build
           FROM nginx:alpine
           COPY --from=build /app/dist /usr/share/nginx/html
-          RUN sed -i 's/listen       80;/listen       10000;/' /etc/nginx/conf.d/default.conf
+          RUN sed -i 's/listen 80;/listen 10000;/;s/listen       80;/listen 10000;/;s/listen \\[::\\]:80;/listen [::]:10000;/' /etc/nginx/conf.d/default.conf
           EXPOSE 10000
           DOCKERFILE
             elif [ "$HAS_START" = "yes" ]; then
@@ -208,7 +208,7 @@ jobs:
               exit 1
             fi
           elif [ -f "$ROOT/requirements.txt" ]; then
-            if grep -qiE '(^|[[:space:]])fastapi([=<>~![:space:]]|$)' "$ROOT/requirements.txt"; then
+            if grep -qi 'fastapi' "$ROOT/requirements.txt"; then
               APP_TYPE="fastapi"
               if [ -f "$ROOT/app/main.py" ]; then MODULE="app.main:app"
               elif [ -f "$ROOT/main.py" ]; then MODULE="main:app"
@@ -225,7 +225,7 @@ jobs:
           EXPOSE 10000
           CMD ["sh", "-c", "uvicorn $MODULE --host 0.0.0.0 --port ${PORT:-10000}"]
           DOCKERFILE
-            elif grep -qiE '(^|[[:space:]])flask([=<>~![:space:]]|$)' "$ROOT/requirements.txt"; then
+            elif grep -qi 'flask' "$ROOT/requirements.txt"; then
               APP_TYPE="flask"
               if [ -f "$ROOT/app.py" ]; then MODULE="app:app"
               elif [ -f "$ROOT/run.py" ]; then MODULE="run:app"
