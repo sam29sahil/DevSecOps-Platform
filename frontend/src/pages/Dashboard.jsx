@@ -989,9 +989,8 @@ function Dashboard() {
 
                 {recentPipelines.map((pipeline) => (
 
-                  <Link
+                  <div
                     key={pipeline.id}
-                    to={`/pipelines/${pipeline.id}`}
                     className="pipeline-item"
                   >
 
@@ -1022,7 +1021,18 @@ function Dashboard() {
                         "unknown"}
                     </span>
 
-                  </Link>
+                    {pipeline.deployment_url && (
+                      <a
+                        href={pipeline.deployment_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="pipeline-deployed-link"
+                      >
+                        Open app ↗
+                      </a>
+                    )}
+
+                  </div>
 
                 ))}
 
