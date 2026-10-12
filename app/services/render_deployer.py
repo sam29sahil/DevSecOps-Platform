@@ -81,7 +81,16 @@ def _unwrap_service(item):
 
 def _ecr_password():
     region = os.getenv("AWS_REGION", "ap-south-1").strip()
-    registry = os.getenv("CONTAINER_REGISTRY", "").strip()
+    registry = (
+        os.getenv("CONTAINER_REGISTRY", "").strip()
+        or os.getenv("ECR_REGISTRY", "").strip()
+    )
+    repository_uri = (
+        os.getenv("AWS_ECR_REPOSITORY_URI", "").strip()
+        or os.getenv("CONTAINER_REGISTRY_URI", "").strip()
+    )
+    if not registry and repository_uri and "/" in repository_uri:
+        registry = repository_uri.split("/", 1)[0]
     if not registry:
         account_id = os.getenv("AWS_ACCOUNT_ID", "").strip()
         if account_id:
@@ -200,12 +209,27 @@ def start_render_deployment(image_url, repository_url):
     if not image_url:
         raise RuntimeError("The ECR image URL is missing.")
 
+    repository_uri = (
+        os.getenv("AWS_ECR_REPOSITORY_URI", "").strip()
+        or os.getenv("CONTAINER_REGISTRY_URI", "").strip()
+    )
+    repository_from_uri = repository_uri.split("/", 1)[1] if "/" in repository_uri else ""
     expected_repository = (
         os.getenv("CONTAINER_REGISTRY_REPOSITORY")
         or os.getenv("AWS_ECR_REPOSITORY")
+        or repository_from_uri
         or "devsecops-platform"
     ).strip("/")
-    registry_host = os.getenv("CONTAINER_REGISTRY", "").strip()
+    registry_host = (
+        os.getenv("CONTAINER_REGISTRY", "").strip()
+        or os.getenv("ECR_REGISTRY", "").strip()
+    )
+    repository_uri = (
+        os.getenv("AWS_ECR_REPOSITORY_URI", "").strip()
+        or os.getenv("CONTAINER_REGISTRY_URI", "").strip()
+    )
+    if not registry_host and repository_uri and "/" in repository_uri:
+        registry_host = repository_uri.split("/", 1)[0]
     if not registry_host:
         region = os.getenv("AWS_REGION", "ap-south-1").strip()
         account_id = os.getenv("AWS_ACCOUNT_ID", "").strip()
