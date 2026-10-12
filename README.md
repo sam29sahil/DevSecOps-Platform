@@ -728,3 +728,39 @@ The API allows `http://localhost:5173` and the configured production frontend or
 **Port 5000 already in use**
 
 Change the host side of the mapping in `docker-compose.yml` (for example `5001:5000`), or stop the process holding the port.
+
+
+## One-click repository deployment
+
+The Projects page now has a **Deploy to Render** action. It reuses a pipeline for the same repository, runs the security gates, detects supported application types, builds the submitted repository's image, pushes it to ECR, provisions or reuses a Render image-backed web service, and reports the live URL back to the dashboard.
+
+### One-time backend configuration
+
+Set these values in the **Render backend service environment** (never in the frontend):
+
+- `RENDER_API_KEY`: a Render API key.
+- `RENDER_OWNER_ID`: the Render workspace ID (typically begins with `tea-`).
+- `RENDER_REGION`: optional; defaults to `singapore`.
+- `RENDER_PLAN`: optional; defaults to `free`.
+- `CONTAINER_REGISTRY`: ECR registry host, e.g. `288418346751.dkr.ecr.ap-south-1.amazonaws.com`.
+- `CONTAINER_REGISTRY_REPOSITORY`: `devsecops-platform`.
+- `AWS_REGION`: `ap-south-1`.
+- `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` (or another valid boto3 credential provider) with ECR read-token permissions, so the backend can refresh Render's private ECR pull credential before each deployment.
+
+Keep `GITHUB_CALLBACK_SECRET` on the backend and the matching `DEVSECOPS_CALLBACK_SECRET` in the platform repository's GitHub Actions secrets. `GITHUB_TOKEN`, `GITHUB_REPOSITORY`, and `GITHUB_CALLBACK_URL` remain required for hosted pipeline dispatch. The old per-service `RENDER_DEPLOY_HOOK` secret is no longer used by this workflow.
+
+### Supported automatic build detection
+
+- An existing repository `Dockerfile` is used as-is.
+- Node.js applications with a `start` script.
+- Vite static frontends with a `build` script.
+- Flask and FastAPI applications with a `requirements.txt` and a recognized application entry point.
+
+Other frameworks, monorepos, apps requiring unconfigured secrets, and apps needing managed databases still need project-specific configuration or a Dockerfile. Detection is deterministic; it does not execute project code just to identify the framework.
+
+### Deployment behavior and cost controls
+
+- One stable Render service name is generated per GitHub repository; later runs redeploy that service rather than creating another one.
+- Each run gets a unique ECR image tag. The workflow scans the target image before pushing and deploying it.
+- The pipeline stops when a configured security gate or deployment stage fails. A live URL is shown only after Render reports the deployment as live.
+- The service plan defaults to Render's free plan. Free-tier availability, service-count limits, cold starts, and any billing requirements are controlled by Render. Monitor provider usage; do not select a paid plan if staying within the approximately $2 budget.
