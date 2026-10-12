@@ -3092,6 +3092,13 @@ def render_deploy_start(run_id):
     if not image_url:
         return jsonify({"success": False, "error": "image_url is required."}), 400
 
+    pushed_image = str(run.get("registry_image") or "").strip()
+    if not pushed_image or not hmac.compare_digest(image_url, pushed_image):
+        return jsonify({
+            "success": False,
+            "error": "Deployment image must match the image successfully pushed by this pipeline run.",
+        }), 409
+
     try:
         result = start_render_deployment(
             image_url=image_url,
