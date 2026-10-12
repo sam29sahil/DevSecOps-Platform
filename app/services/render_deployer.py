@@ -241,6 +241,10 @@ def start_render_deployment(image_url, repository_url):
         account_id = os.getenv("AWS_ACCOUNT_ID", "").strip()
         if account_id:
             registry_host = f"{account_id}.dkr.ecr.{region}.amazonaws.com"
+    if not registry_host:
+        candidate = image_url.split("/", 1)[0]
+        if re.fullmatch(r"[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com", candidate):
+            registry_host = candidate
     if not registry_host or not image_url.startswith(f"{registry_host}/{expected_repository}:"):
         raise RuntimeError("The image URL does not match the configured ECR repository.")
 
