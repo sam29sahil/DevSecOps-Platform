@@ -260,7 +260,7 @@ jobs:
           echo "APP_TYPE=$APP_TYPE" >> "$GITHUB_ENV"
           echo "app_type=$APP_TYPE" >> "$GITHUB_OUTPUT"
           DETECTION_COMPLETED=true
-          send_callback "project_detection" "success" "Detected application type: ${APP_TYPE}." "{\\"app_type\\":\\"${APP_TYPE}\\"}"
+          send_callback "project_detection" "success" "Detected application type: ${APP_TYPE}." "{\"app_type\":\"${APP_TYPE}\"}"
 
       - name: Skip Project Detection when Docker is disabled
         if: inputs.docker_enabled != 'true'
