@@ -1936,3 +1936,32 @@
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Last successful deployment link */
+.pipeline-deployment-link {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  border: 1px solid rgba(53, 217, 130, 0.24);
+  border-radius: 10px;
+  background: rgba(24, 171, 101, 0.07);
+}
+
+.pipeline-deployment-link span {
+  color: #86a2c6;
+  font-size: 12px;
+}
+
+.pipeline-deployment-link a {
+  color: #35d982;
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.pipeline-deployment-link a:hover {
+  text-decoration: underline;
+}
