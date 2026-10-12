@@ -26,6 +26,10 @@ from app.models import (
 
 from app.scanners.code_scanner import CodeScanner
 from app.services.aws_service import AwsService
+from app.services.render_deployer import (
+    get_render_deployment_status,
+    start_render_deployment,
+)
 
 
 # ============================================================
@@ -89,6 +93,16 @@ def pipeline_row_to_dict(row):
         pipeline.pop("stages_json", "[]"),
         [],
     )
+    deployment_stage = next(
+        (stage for stage in pipeline["stages"] if stage.get("id") == "deployment"),
+        None,
+    )
+    deployment_details = (deployment_stage or {}).get("details") or {}
+    pipeline["deployment_url"] = (
+        deployment_details.get("service_url") or deployment_details.get("url")
+        if deployment_stage and deployment_stage.get("status") == "success"
+        else None
+    )
 
     return pipeline
 
@@ -128,7 +142,13 @@ def run_row_to_dict(row):
     run["registry_image"] = registry_stage.get("details", {}).get("image") if registry_stage else None
 
     deployment_stage = next((s for s in run["stages"] if s.get("id") == "deployment"), None)
-    run["deployment"] = "success" if (deployment_stage and deployment_stage.get("status") == "success") else None
+    deployment_details = (deployment_stage or {}).get("details") or {}
+    run["deployment"] = deployment_stage.get("status") if deployment_stage else None
+    run["deployment_url"] = (
+        deployment_details.get("service_url") or deployment_details.get("url")
+    )
+    run["render_service_id"] = deployment_details.get("service_id")
+    run["render_deploy_id"] = deployment_details.get("deploy_id")
 
     return run
 
@@ -2947,6 +2967,170 @@ def pipeline_run_details(run_id):
             "run": run,
         }
     )
+
+
+# ============================================================
+# RENDER IMAGE DEPLOYMENT API
+# ============================================================
+
+def _require_github_callback_auth():
+    expected_secret = os.getenv("GITHUB_CALLBACK_SECRET")
+    if not expected_secret:
+        return jsonify({
+            "success": False,
+            "error": "GITHUB_CALLBACK_SECRET is not configured on the server.",
+        }), 500
+
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return jsonify({
+            "success": False,
+            "error": "Missing or invalid authorization header.",
+        }), 401
+
+    token = auth_header[len("Bearer "):].strip()
+    if not hmac.compare_digest(token, expected_secret):
+        return jsonify({
+            "success": False,
+            "error": "Unauthorized.",
+        }), 401
+    return None
+
+
+def _persist_render_stage(run, pipeline, status, message, details=None, error=None):
+    stage = next(
+        (item for item in run.get("stages", []) if item.get("id") == "deployment"),
+        None,
+    )
+    if stage is None:
+        raise RuntimeError("Deployment stage is missing from this pipeline run.")
+
+    stage["status"] = status
+    stage["message"] = message
+    stage["details"] = {**(stage.get("details") or {}), **(details or {})}
+    stage["error"] = error
+    if status == "running":
+        stage["started_at"] = stage.get("started_at") or utc_now()
+    else:
+        stage["completed_at"] = utc_now()
+
+    run["deployment"] = status
+    run["stages"] = run.get("stages", [])
+    if status == "failed":
+        run["status"] = "failed"
+        run["completed_at"] = utc_now()
+        run["error"] = error or message
+        if pipeline:
+            pipeline["status"] = "failed"
+            pipeline["last_error"] = run["error"]
+    if pipeline:
+        pipeline["stages"] = run["stages"]
+        pipeline["updated_at"] = utc_now()
+        save_pipeline(pipeline)
+    save_pipeline_run(run)
+
+
+@pipelines_bp.post("/runs/<int:run_id>/render-deploy")
+def render_deploy_start(run_id):
+    """Create or reuse a Render image-backed service for this repository."""
+    auth_error = _require_github_callback_auth()
+    if auth_error:
+        return auth_error
+
+    run = find_run(run_id)
+    if run is None:
+        return jsonify({"success": False, "error": "Pipeline run not found."}), 404
+
+    pipeline = find_pipeline(run["pipeline_id"])
+    if not pipeline or not pipeline.get("deployment_enabled"):
+        return jsonify({
+            "success": False,
+            "error": "Deployment is not enabled for this pipeline.",
+        }), 400
+
+    data = request.get_json(silent=True) or {}
+    image_url = str(data.get("image_url") or "").strip()
+    if not image_url:
+        return jsonify({"success": False, "error": "image_url is required."}), 400
+
+    try:
+        result = start_render_deployment(
+            image_url=image_url,
+            repository_url=run.get("repository_url") or pipeline.get("repository_url"),
+        )
+        _persist_render_stage(
+            run,
+            pipeline,
+            "running",
+            "Render accepted the deployment; waiting for the application to become live.",
+            details={
+                "service_id": result["service_id"],
+                "deploy_id": result["deploy_id"],
+                "service_name": result["service_name"],
+                "service_url": result.get("service_url"),
+                "image_url": result["image_url"],
+                "created": result["created"],
+            },
+        )
+        return jsonify({
+            "success": True,
+            "message": "Render deployment started.",
+            "service_id": result["service_id"],
+            "deploy_id": result["deploy_id"],
+            "service_name": result["service_name"],
+            "service_url": result.get("service_url"),
+            "created": result["created"],
+        }), 202
+    except Exception as error:
+        safe_message = str(error)[:500]
+        try:
+            _persist_render_stage(
+                run,
+                pipeline,
+                "failed",
+                "Render deployment could not be started.",
+                error=safe_message,
+            )
+        except Exception:
+            pass
+        return jsonify({
+            "success": False,
+            "error": safe_message,
+        }), 502
+
+
+@pipelines_bp.get("/runs/<int:run_id>/render-deploy-status")
+def render_deploy_status(run_id):
+    """Poll the Render API for the deployment started by this pipeline run."""
+    auth_error = _require_github_callback_auth()
+    if auth_error:
+        return auth_error
+
+    run = find_run(run_id)
+    if run is None:
+        return jsonify({"success": False, "error": "Pipeline run not found."}), 404
+
+    stage = next(
+        (item for item in run.get("stages", []) if item.get("id") == "deployment"),
+        None,
+    )
+    details = (stage or {}).get("details") or {}
+    service_id = details.get("service_id")
+    deploy_id = details.get("deploy_id")
+    if not service_id or not deploy_id:
+        return jsonify({
+            "success": False,
+            "error": "No Render deployment has been started for this run.",
+        }), 409
+
+    try:
+        result = get_render_deployment_status(service_id, deploy_id)
+        return jsonify({"success": True, **result}), 200
+    except Exception as error:
+        return jsonify({
+            "success": False,
+            "error": str(error)[:500],
+        }), 502
 
 
 # ============================================================
