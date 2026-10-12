@@ -12,7 +12,7 @@ from app.routes.pipelines import (
     get_pipeline_run,
     get_pipeline,
 )
-from app.services.render_deployer import _service_name
+from app.services.render_deployer import _service_name, start_render_deployment
 
 
 # ============================================================
@@ -76,6 +76,56 @@ def test_render_service_name_is_stable_per_repository():
 def test_render_service_name_rejects_non_github_urls():
     with pytest.raises(RuntimeError):
         _service_name("https://example.com/owner/repository")
+
+
+def test_render_deployer_creates_image_backed_service(monkeypatch):
+    monkeypatch.setenv("RENDER_API_KEY", "test-render-key")
+    monkeypatch.setenv("RENDER_OWNER_ID", "tea-test-workspace")
+    monkeypatch.setenv("CONTAINER_REGISTRY", "288418346751.dkr.ecr.ap-south-1.amazonaws.com")
+    monkeypatch.setenv("CONTAINER_REGISTRY_REPOSITORY", "devsecops-platform")
+    monkeypatch.setenv("RENDER_REGION", "singapore")
+    monkeypatch.setenv("RENDER_PLAN", "free")
+
+    with patch(
+        "app.services.render_deployer._refresh_ecr_registry_credential",
+        return_value=("crd-test", "288418346751.dkr.ecr.ap-south-1.amazonaws.com"),
+    ), patch("app.services.render_deployer._find_service", return_value=None), patch(
+        "app.services.render_deployer._request"
+    ) as mock_request:
+        mock_request.side_effect = [
+            {
+                "service": {
+                    "id": "srv-test",
+                    "name": "dsp-sample-app-1234567",
+                    "serviceDetails": {"url": "https://dsp-sample-app-1234567.onrender.com"},
+                },
+                "deployId": "dep-test",
+            },
+            {
+                "id": "srv-test",
+                "serviceDetails": {"url": "https://dsp-sample-app-1234567.onrender.com"},
+            },
+        ]
+
+        result = start_render_deployment(
+            "288418346751.dkr.ecr.ap-south-1.amazonaws.com/devsecops-platform:3-4-abc123",
+            "https://github.com/example-owner/sample-app",
+        )
+
+    create_call = next(
+        call for call in mock_request.call_args_list
+        if call.args[0] == "POST" and call.args[1] == "/services"
+    )
+    payload = create_call.kwargs["payload"]
+    assert payload["type"] == "web_service"
+    assert payload["ownerId"] == "tea-test-workspace"
+    assert payload["image"]["ownerId"] == "tea-test-workspace"
+    assert payload["image"]["registryCredentialId"] == "crd-test"
+    assert payload["serviceDetails"]["runtime"] == "docker"
+    assert payload["serviceDetails"]["plan"] == "free"
+    assert result["service_id"] == "srv-test"
+    assert result["deploy_id"] == "dep-test"
+    assert result["created"] is True
 
 
 # ============================================================
