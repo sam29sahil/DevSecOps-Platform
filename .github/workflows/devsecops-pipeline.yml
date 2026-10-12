@@ -190,7 +190,7 @@ jobs:
           RUN npm run build
           FROM nginx:alpine
           COPY --from=build /app/dist /usr/share/nginx/html
-          RUN sed -i 's/listen 80;/listen 10000;/;s/listen       80;/listen 10000;/;s/listen \\[::\\]:80;/listen [::]:10000;/' /etc/nginx/conf.d/default.conf
+          RUN sed -i 's/listen 80;/listen 10000;/;s/listen       80;/listen 10000;/' /etc/nginx/conf.d/default.conf
           EXPOSE 10000
           DOCKERFILE
             elif [ "$HAS_START" = "yes" ]; then
@@ -446,6 +446,7 @@ jobs:
           done
 
           DEPLOY_ERR="Timed out waiting for Render to report a live deployment after 15 minutes."
+          echo "callback_reported=true" >> "$GITHUB_OUTPUT"
           send_callback "deployment" "failed" "${DEPLOY_ERR}" "{}" "${DEPLOY_ERR}"
           exit 1
 
