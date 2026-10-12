@@ -1556,3 +1556,17 @@
   }
 
 }
+
+/* Live application links in recent pipeline activity */
+.pipeline-deployed-link {
+  color: #72b7ff;
+  font-size: 12px;
+  font-weight: 700;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.pipeline-deployed-link:hover {
+  color: #b6dcff;
+  text-decoration: underline;
+}
