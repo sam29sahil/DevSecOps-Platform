@@ -10,6 +10,7 @@ from app.models import (
     get_scan,
     get_scans,
     update_scan,
+    create_notification,
 )
 
 from app.scanners.code_scanner import CodeScanner
@@ -251,6 +252,14 @@ def run_scan():
             ),
             security_score=security_score,
             completed_at=completed_at,
+        )
+
+        create_notification(
+            title="Security Scan Completed",
+            message=f"Security scan completed for {project.get('name', 'project')}. Score: {security_score}/100, Findings: {len(findings)}.",
+            event_type="security_completed",
+            status="success" if security_score >= 70 else "warning",
+            project_id=project_id,
         )
 
         # ----------------------------------------------------

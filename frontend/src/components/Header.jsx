@@ -1,9 +1,9 @@
 import {
   Search,
-  Bell,
   ChevronDown,
   Shield,
 } from "lucide-react";
+import NotificationCenter from "./NotificationCenter";
 
 function Header() {
   return (
@@ -49,17 +49,7 @@ function Header() {
         </div>
 
 
-        <button
-          type="button"
-          className="icon-button notification-button"
-          aria-label="Notifications"
-        >
-
-          <Bell size={19} />
-
-          <span className="notification-dot" />
-
-        </button>
+        <NotificationCenter />
 
 
         <div className="profile">

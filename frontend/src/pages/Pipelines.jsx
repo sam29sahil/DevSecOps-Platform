@@ -679,6 +679,21 @@ export default function Pipelines() {
     }
   }
 
+  /* Polling for real-time pipeline run updates */
+  useEffect(() => {
+    if (!selectedPipeline?.id) return;
+    const interval = setInterval(() => {
+      getPipelineRuns(selectedPipeline.id)
+        .then((res) => {
+          if (res?.success && Array.isArray(res.runs)) {
+            setRuns(res.runs);
+          }
+        })
+        .catch(() => {});
+    }, 3500);
+    return () => clearInterval(interval);
+  }, [selectedPipeline?.id]);
+
   /* =========================================================
      SELECT PIPELINE
   ========================================================= */
@@ -1176,6 +1191,7 @@ export default function Pipelines() {
                     <th>Run</th>
                     <th>Status</th>
                     <th>Started</th>
+                    <th>Live Application</th>
                     <th>Scan</th>
                     <th>Findings</th>
                   </tr>
@@ -1202,6 +1218,38 @@ export default function Pipelines() {
                         {formatDate(
                           run.started_at ||
                             run.created_at
+                        )}
+                      </td>
+
+                      <td>
+                        {run.app_url ? (
+                          <a
+                            href={run.app_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "4px",
+                              background: "rgba(16, 185, 129, 0.15)",
+                              color: "#34d399",
+                              border: "1px solid rgba(16, 185, 129, 0.3)",
+                              padding: "3px 8px",
+                              borderRadius: "4px",
+                              textDecoration: "none",
+                              fontSize: "12px",
+                              fontWeight: "600",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            ↗ Open Live App
+                          </a>
+                        ) : run.status === "failed" ? (
+                          <span style={{ color: "#f87171", fontSize: "12px" }}>Failed</span>
+                        ) : run.status === "running" ? (
+                          <span style={{ color: "#60a5fa", fontSize: "12px" }}>In progress...</span>
+                        ) : (
+                          "—"
                         )}
                       </td>
 

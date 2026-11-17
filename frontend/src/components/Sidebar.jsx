@@ -12,6 +12,7 @@ import {
   Settings,
   Activity,
   LogOut,
+  Server,
 } from "lucide-react";
 
 const menuItems = [
@@ -32,6 +33,11 @@ const menuItems = [
         name: "Pipelines",
         path: "/pipelines",
         icon: GitBranch,
+      },
+      {
+        name: "Deployments",
+        path: "/deployments",
+        icon: Server,
       },
     ],
   },

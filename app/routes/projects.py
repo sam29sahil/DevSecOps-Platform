@@ -6,6 +6,7 @@ from app.models import (
     get_project,
     update_project,
     delete_project,
+    create_notification,
 )
 
 
@@ -101,6 +102,14 @@ def create_new_project():
         data.get("source_directory", ".")
     ).strip() or "."
 
+    app_port = data.get("app_port", 5000)
+    try:
+        app_port = int(app_port) if app_port else 5000
+    except (ValueError, TypeError):
+        app_port = 5000
+
+    app_type = str(data.get("app_type", "web")).strip() or "web"
+
     # -----------------------------------------------------
     # Create project
     # -----------------------------------------------------
@@ -111,6 +120,16 @@ def create_new_project():
         repository_url=repository_url,
         branch=branch,
         source_directory=source_directory,
+        app_port=app_port,
+        app_type=app_type,
+    )
+
+    create_notification(
+        title="Repository Submitted Successfully",
+        message=f"Repository '{name}' ({repository_url or 'Local'}) was submitted successfully.",
+        event_type="repo_submitted",
+        status="success",
+        project_id=project["id"],
     )
 
     return jsonify({

@@ -15,6 +15,7 @@ import Pipelines from "./pages/Pipelines";
 import Reports from "./pages/Reports";
 import Containers from "./pages/Containers";
 import AwsActivity from "./pages/AwsActivity";
+import Deployments from "./pages/Deployments";
 
 function App() {
   return (
@@ -64,6 +65,12 @@ function App() {
       <Route
         path="/pipelines"
         element={<Pipelines />}
+      />
+
+      {/* Deployments */}
+      <Route
+        path="/deployments"
+        element={<Deployments />}
       />
 
       <Route

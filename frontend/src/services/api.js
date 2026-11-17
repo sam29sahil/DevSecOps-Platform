@@ -298,6 +298,65 @@ export async function getAwsImages() {
 ========================================================= */
 
 /* =========================================================
+   DEPLOYMENTS
+========================================================= */
+
+export async function getDeployments(projectId = null) {
+  const query = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+  return request(`/deployments${query}`);
+}
+
+export async function getDeploymentStats() {
+  return request("/deployments/stats");
+}
+
+export async function getDeployment(identifier) {
+  return request(`/deployments/${identifier}`);
+}
+
+export async function stopDeployment(identifier) {
+  return request(`/deployments/${identifier}/stop`, {
+    method: "POST",
+  });
+}
+
+export async function deleteDeployment(identifier) {
+  return request(`/deployments/${identifier}`, {
+    method: "DELETE",
+  });
+}
+
+/* =========================================================
+   NOTIFICATIONS
+========================================================= */
+
+export async function getNotifications(unreadOnly = false, limit = 50) {
+  const params = new URLSearchParams();
+  if (unreadOnly) params.append("unread_only", "true");
+  if (limit) params.append("limit", limit);
+  const query = params.toString();
+  return request(`/notifications${query ? `?${query}` : ""}`);
+}
+
+export async function markNotificationRead(id) {
+  return request(`/notifications/${id}/read`, {
+    method: "PUT",
+  });
+}
+
+export async function markAllNotificationsRead() {
+  return request("/notifications/read-all", {
+    method: "PUT",
+  });
+}
+
+export async function clearAllNotifications() {
+  return request("/notifications", {
+    method: "DELETE",
+  });
+}
+
+/* =========================================================
    HEALTH
 ========================================================= */
 

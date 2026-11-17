@@ -36,6 +36,7 @@ function Projects() {
     branch: "main",
     repository_url: "",
     description: "",
+    app_port: 5000,
   });
 
   /* =========================================================
@@ -98,6 +99,7 @@ function Projects() {
       branch: "main",
       repository_url: "",
       description: "",
+      app_port: 5000,
     });
   }
 
@@ -482,6 +484,33 @@ function Projects() {
                   }
                   placeholder="https://github.com/user/repository"
                 />
+
+              </div>
+
+              {/* CONTAINER PORT */}
+
+              <div className="form-group">
+
+                <label htmlFor="app_port">
+                  Application / Container Port
+                </label>
+
+                <input
+                  id="app_port"
+                  name="app_port"
+                  type="number"
+                  value={
+                    formData.app_port
+                  }
+                  onChange={
+                    handleChange
+                  }
+                  placeholder="5000"
+                />
+
+                <span style={{ fontSize: "11px", color: "#64748b", marginTop: "4px", display: "block" }}>
+                  Port your app listens on (e.g. 5000 for Flask, 3000 for Node/React, 8000 for Django, 80 for Nginx).
+                </span>
 
               </div>
 

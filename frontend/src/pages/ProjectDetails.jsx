@@ -13,6 +13,7 @@ import {
   getVulnerabilities,
   startScan,
   deleteProject,
+  getDeployments,
 } from "../services/api";
 import "./ProjectDetails.css";
 
@@ -28,6 +29,7 @@ function ProjectDetails() {
   const [project, setProject] = useState(null);
   const [scans, setScans] = useState([]);
   const [vulnerabilities, setVulnerabilities] = useState([]);
+  const [deployments, setDeployments] = useState([]);
 
   const [loading, setLoading] = useState(true);
   const [scanLoading, setScanLoading] = useState(false);
@@ -171,6 +173,25 @@ function ProjectDetails() {
     }
   }
 
+  /* =========================================================
+     LOAD DEPLOYMENTS
+  ========================================================= */
+
+  async function loadDeployments() {
+    try {
+      const response = await getDeployments(Number(projectId));
+      if (response && response.success) {
+        setDeployments(
+          Array.isArray(response.deployments)
+            ? response.deployments
+            : []
+        );
+      }
+    } catch (err) {
+      console.warn("Deployments loading error:", err);
+    }
+  }
+
 
   /* =========================================================
      INITIAL LOAD
@@ -180,6 +201,13 @@ function ProjectDetails() {
     loadProject();
     loadScans();
     loadVulnerabilities();
+    loadDeployments();
+
+    const interval = setInterval(() => {
+      loadDeployments();
+    }, 4000);
+
+    return () => clearInterval(interval);
   }, [projectId]);
 
 
@@ -192,6 +220,7 @@ function ProjectDetails() {
       loadProject(),
       loadScans(),
       loadVulnerabilities(),
+      loadDeployments(),
     ]);
   }
 
@@ -1112,6 +1141,138 @@ function ProjectDetails() {
             </div>
 
           </div>
+
+        </section>
+
+
+        {/* =================================================
+            APPLICATION DEPLOYMENTS & LIVE URL
+        ================================================= */}
+
+        <section className="project-deployment-section">
+
+          <div className="section-header">
+
+            <div>
+
+              <h2>
+                Application Deployment & Live URL
+              </h2>
+
+              <p>
+                AWS ECS Fargate container status and public live application URL
+              </p>
+
+            </div>
+
+            <Link
+              to="/deployments"
+              className="secondary-button"
+            >
+              All Deployments →
+            </Link>
+
+          </div>
+
+          {deployments.length === 0 ? (
+            <div className="empty-state">
+              <div className="empty-icon">
+                ☁
+              </div>
+              <h3>No deployments yet</h3>
+              <p>
+                Run a pipeline connected to this project with <strong>Deployment Enabled</strong> to automatically build and deploy to AWS ECS Fargate.
+              </p>
+              <Link
+                to="/pipelines"
+                className="primary-button"
+                style={{ marginTop: 12 }}
+              >
+                Open Pipelines
+              </Link>
+            </div>
+          ) : (
+            <div className="project-dep-card">
+              {(() => {
+                const latest = deployments[0];
+                const isLive = (latest.status === "deployed" || latest.status === "running") && latest.app_url;
+                return (
+                  <div>
+                    <div className="project-dep-top">
+                      <div>
+                        <span className="dep-eyebrow">LATEST WORKLOAD</span>
+                        <h3>{latest.app_name || project.name}</h3>
+                        <span className="dep-sub-id">Deployment #{latest.deployment_id}</span>
+                      </div>
+                      <div className="dep-badges-col">
+                        <span className={`status-pill ${latest.status}`}>
+                          {String(latest.status).toUpperCase()}
+                        </span>
+                        <span className={`health-pill ${latest.health_status}`}>
+                          {latest.health_status ? String(latest.health_status).toUpperCase() : "CHECKING"}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="project-dep-grid">
+                      <div>
+                        <span>Repository</span>
+                        <strong>{latest.repository_url || project.repository_url || "—"}</strong>
+                      </div>
+                      <div>
+                        <span>Platform</span>
+                        <strong>{latest.platform || "AWS ECS Fargate"}</strong>
+                      </div>
+                      <div>
+                        <span>Region</span>
+                        <strong>{latest.region || "ap-south-1"}</strong>
+                      </div>
+                      <div>
+                        <span>Container Port</span>
+                        <strong>{latest.container_port || project.app_port || 5000}</strong>
+                      </div>
+                      {latest.image_uri && (
+                        <div className="full-width">
+                          <span>ECR Image</span>
+                          <strong className="code-font">{latest.image_uri}</strong>
+                        </div>
+                      )}
+                    </div>
+
+                    {isLive ? (
+                      <div className="live-url-highlight">
+                        <div className="live-label">
+                          <span className="live-pulsing-dot" />
+                          <strong>Application is Live</strong>
+                        </div>
+                        <div className="live-action-row">
+                          <input type="text" readOnly value={latest.app_url} className="live-url-field" />
+                          <a
+                            href={latest.app_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="primary-button open-live-btn"
+                          >
+                            ↗ Open Live Application
+                          </a>
+                        </div>
+                      </div>
+                    ) : latest.status === "failed" ? (
+                      <div className="dep-failed-box">
+                        <strong>Deployment Failed</strong>
+                        <p>{latest.error_message || "The container deployment or health check failed."}</p>
+                      </div>
+                    ) : (
+                      <div className="dep-pending-box">
+                        <div className="loading-spinner" />
+                        <span>Deploying container to AWS ECS Fargate... Live URL will appear once healthy.</span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+            </div>
+          )}
 
         </section>
 

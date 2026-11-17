@@ -181,6 +181,83 @@ def init_db():
         )
     """)
 
+    # Safe migrations for pipeline_runs
+    pipeline_run_cols = {
+        row["name"]
+        for row in db.execute("PRAGMA table_info(pipeline_runs)").fetchall()
+    }
+    if "app_url" not in pipeline_run_cols:
+        db.execute("ALTER TABLE pipeline_runs ADD COLUMN app_url TEXT")
+    if "deployment_id" not in pipeline_run_cols:
+        db.execute("ALTER TABLE pipeline_runs ADD COLUMN deployment_id TEXT")
+
+    # Safe migrations for projects
+    if "app_port" not in project_columns:
+        db.execute("ALTER TABLE projects ADD COLUMN app_port INTEGER DEFAULT 5000")
+    if "app_type" not in project_columns:
+        db.execute("ALTER TABLE projects ADD COLUMN app_type TEXT DEFAULT 'web'")
+
+    # ========================================================
+    # DEPLOYMENTS
+    # ========================================================
+
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS deployments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            deployment_id TEXT UNIQUE NOT NULL,
+            project_id INTEGER,
+            pipeline_run_id INTEGER,
+            app_name TEXT,
+            repository_url TEXT,
+            branch TEXT DEFAULT 'main',
+            image_uri TEXT,
+            ecr_repository TEXT,
+            ecs_cluster TEXT,
+            ecs_service TEXT,
+            task_definition_arn TEXT,
+            container_port INTEGER DEFAULT 5000,
+            cpu TEXT DEFAULT '256',
+            memory TEXT DEFAULT '512',
+            platform TEXT DEFAULT 'AWS ECS Fargate',
+            region TEXT DEFAULT 'ap-south-1',
+            status TEXT DEFAULT 'pending',
+            health_status TEXT DEFAULT 'unknown',
+            app_url TEXT,
+            error_message TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            completed_at TEXT,
+            FOREIGN KEY (project_id)
+                REFERENCES projects(id)
+                ON DELETE CASCADE,
+            FOREIGN KEY (pipeline_run_id)
+                REFERENCES pipeline_runs(id)
+                ON DELETE SET NULL
+        )
+    """)
+
+    # ========================================================
+    # NOTIFICATIONS
+    # ========================================================
+
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS notifications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER,
+            deployment_id TEXT,
+            pipeline_run_id INTEGER,
+            title TEXT NOT NULL,
+            message TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            status TEXT DEFAULT 'info',
+            read INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (project_id)
+                REFERENCES projects(id)
+                ON DELETE CASCADE
+        )
+    """)
+
     db.commit()
     db.close()
 
@@ -195,6 +272,8 @@ def create_project(
     repository_url="",
     branch="main",
     source_directory=".",
+    app_port=5000,
+    app_type="web",
 ):
     """Create a new project."""
 
@@ -220,11 +299,13 @@ def create_project(
             repository_url,
             branch,
             source_directory,
+            app_port,
+            app_type,
             status,
             created_at,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             name,
@@ -232,6 +313,8 @@ def create_project(
             repository_url,
             branch,
             source_directory,
+            int(app_port or 5000),
+            str(app_type or "web"),
             "active",
             now,
             now,
@@ -294,6 +377,8 @@ def update_project(
     branch="main",
     source_directory=".",
     status="active",
+    app_port=None,
+    app_type=None,
 ):
     """Update an existing project."""
 
@@ -310,29 +395,42 @@ def update_project(
     if not source_directory:
         source_directory = "."
 
+    fields = [
+        "name = ?",
+        "description = ?",
+        "repository_url = ?",
+        "branch = ?",
+        "source_directory = ?",
+        "status = ?",
+        "updated_at = ?",
+    ]
+    values = [
+        name,
+        description,
+        repository_url,
+        branch,
+        source_directory,
+        status,
+        now,
+    ]
+
+    if app_port is not None:
+        fields.append("app_port = ?")
+        values.append(int(app_port))
+
+    if app_type is not None:
+        fields.append("app_type = ?")
+        values.append(str(app_type))
+
+    values.append(project_id)
+
     cursor = db.execute(
-        """
+        f"""
         UPDATE projects
-        SET
-            name = ?,
-            description = ?,
-            repository_url = ?,
-            branch = ?,
-            source_directory = ?,
-            status = ?,
-            updated_at = ?
+        SET {", ".join(fields)}
         WHERE id = ?
         """,
-        (
-            name,
-            description,
-            repository_url,
-            branch,
-            source_directory,
-            status,
-            now,
-            project_id,
-        ),
+        values,
     )
 
     db.commit()
@@ -669,3 +767,358 @@ def get_findings(scan_id=None):
     db.close()
 
     return [dict(finding) for finding in findings]
+
+
+# ============================================================
+# DEPLOYMENTS
+# ============================================================
+
+def create_deployment(
+    project_id=None,
+    pipeline_run_id=None,
+    app_name="App",
+    repository_url="",
+    branch="main",
+    image_uri="",
+    ecr_repository="",
+    ecs_cluster="devsecops-cluster",
+    ecs_service="",
+    task_definition_arn="",
+    container_port=5000,
+    cpu="256",
+    memory="512",
+    platform="AWS ECS Fargate",
+    region="ap-south-1",
+    status="pending",
+    health_status="unknown",
+    app_url="",
+    error_message="",
+    deployment_id=None,
+):
+    """Create a new deployment record."""
+    db = get_db()
+    now = datetime.utcnow().isoformat()
+
+    if not deployment_id:
+        import uuid
+        deployment_id = f"deploy-{uuid.uuid4().hex[:8]}"
+
+    cursor = db.execute(
+        """
+        INSERT INTO deployments (
+            deployment_id,
+            project_id,
+            pipeline_run_id,
+            app_name,
+            repository_url,
+            branch,
+            image_uri,
+            ecr_repository,
+            ecs_cluster,
+            ecs_service,
+            task_definition_arn,
+            container_port,
+            cpu,
+            memory,
+            platform,
+            region,
+            status,
+            health_status,
+            app_url,
+            error_message,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            deployment_id,
+            project_id,
+            pipeline_run_id,
+            app_name,
+            repository_url,
+            branch,
+            image_uri,
+            ecr_repository,
+            ecs_cluster,
+            ecs_service,
+            task_definition_arn,
+            int(container_port or 5000),
+            str(cpu or "256"),
+            str(memory or "512"),
+            platform,
+            region,
+            status,
+            health_status,
+            app_url,
+            error_message,
+            now,
+            now,
+        ),
+    )
+
+    db.commit()
+    db.close()
+    return get_deployment(deployment_id)
+
+
+def get_deployment(identifier):
+    """Return one deployment by ID or deployment_id string."""
+    db = get_db()
+    if isinstance(identifier, int) or (isinstance(identifier, str) and identifier.isdigit()):
+        row = db.execute(
+            """
+            SELECT d.*, p.name AS project_name
+            FROM deployments d
+            LEFT JOIN projects p ON p.id = d.project_id
+            WHERE d.id = ?
+            """,
+            (int(identifier),),
+        ).fetchone()
+    else:
+        row = db.execute(
+            """
+            SELECT d.*, p.name AS project_name
+            FROM deployments d
+            LEFT JOIN projects p ON p.id = d.project_id
+            WHERE d.deployment_id = ?
+            """,
+            (str(identifier),),
+        ).fetchone()
+
+    db.close()
+    if row is None:
+        return None
+    return dict(row)
+
+
+def get_deployments(project_id=None):
+    """Return all deployments, optionally filtered by project_id."""
+    db = get_db()
+    if project_id is not None:
+        rows = db.execute(
+            """
+            SELECT d.*, p.name AS project_name
+            FROM deployments d
+            LEFT JOIN projects p ON p.id = d.project_id
+            WHERE d.project_id = ?
+            ORDER BY d.id DESC
+            """,
+            (project_id,),
+        ).fetchall()
+    else:
+        rows = db.execute(
+            """
+            SELECT d.*, p.name AS project_name
+            FROM deployments d
+            LEFT JOIN projects p ON p.id = d.project_id
+            ORDER BY d.id DESC
+            """,
+        ).fetchall()
+
+    db.close()
+    return [dict(row) for row in rows]
+
+
+def get_latest_deployment(project_id=None):
+    """Return the most recent deployment, optionally filtered by project_id."""
+    db = get_db()
+    if project_id is not None:
+        row = db.execute(
+            """
+            SELECT d.*, p.name AS project_name
+            FROM deployments d
+            LEFT JOIN projects p ON p.id = d.project_id
+            WHERE d.project_id = ?
+            ORDER BY d.id DESC
+            LIMIT 1
+            """,
+            (project_id,),
+        ).fetchone()
+    else:
+        row = db.execute(
+            """
+            SELECT d.*, p.name AS project_name
+            FROM deployments d
+            LEFT JOIN projects p ON p.id = d.project_id
+            ORDER BY d.id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+
+    db.close()
+    if row is None:
+        return None
+    return dict(row)
+
+
+def update_deployment(identifier, **updates):
+    """Update fields of an existing deployment."""
+    db = get_db()
+    now = datetime.utcnow().isoformat()
+    updates["updated_at"] = now
+
+    fields = []
+    values = []
+    for key, val in updates.items():
+        fields.append(f"{key} = ?")
+        values.append(val)
+
+    if not fields:
+        db.close()
+        return get_deployment(identifier)
+
+    if isinstance(identifier, int) or (isinstance(identifier, str) and identifier.isdigit()):
+        values.append(int(identifier))
+        db.execute(
+            f"UPDATE deployments SET {', '.join(fields)} WHERE id = ?",
+            values,
+        )
+    else:
+        values.append(str(identifier))
+        db.execute(
+            f"UPDATE deployments SET {', '.join(fields)} WHERE deployment_id = ?",
+            values,
+        )
+
+    db.commit()
+    db.close()
+    return get_deployment(identifier)
+
+
+def delete_deployment(identifier):
+    """Delete a deployment record."""
+    db = get_db()
+    if isinstance(identifier, int) or (isinstance(identifier, str) and identifier.isdigit()):
+        cursor = db.execute("DELETE FROM deployments WHERE id = ?", (int(identifier),))
+    else:
+        cursor = db.execute("DELETE FROM deployments WHERE deployment_id = ?", (str(identifier),))
+    db.commit()
+    deleted = cursor.rowcount > 0
+    db.close()
+    return deleted
+
+
+def get_deployment_stats():
+    """Return deployment statistics."""
+    db = get_db()
+    total = db.execute("SELECT COUNT(*) FROM deployments").fetchone()[0]
+    successful = db.execute(
+        "SELECT COUNT(*) FROM deployments WHERE status IN ('deployed', 'success', 'running')"
+    ).fetchone()[0]
+    failed = db.execute(
+        "SELECT COUNT(*) FROM deployments WHERE status = 'failed'"
+    ).fetchone()[0]
+    running = db.execute(
+        "SELECT COUNT(*) FROM deployments WHERE status IN ('deployed', 'running') AND health_status = 'healthy'"
+    ).fetchone()[0]
+    db.close()
+
+    latest = get_latest_deployment()
+    return {
+        "total": total,
+        "successful": successful,
+        "failed": failed,
+        "running": running,
+        "latest": latest,
+    }
+
+
+# ============================================================
+# NOTIFICATIONS
+# ============================================================
+
+def create_notification(
+    title,
+    message,
+    event_type,
+    status="info",
+    project_id=None,
+    deployment_id=None,
+    pipeline_run_id=None,
+):
+    """Store a persistent deployment or pipeline event notification."""
+    db = get_db()
+    now = datetime.utcnow().isoformat()
+
+    cursor = db.execute(
+        """
+        INSERT INTO notifications (
+            project_id,
+            deployment_id,
+            pipeline_run_id,
+            title,
+            message,
+            event_type,
+            status,
+            read,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+        """,
+        (
+            project_id,
+            deployment_id,
+            pipeline_run_id,
+            title,
+            message,
+            event_type,
+            status,
+            now,
+        ),
+    )
+    notif_id = cursor.lastrowid
+    db.commit()
+
+    row = db.execute("SELECT * FROM notifications WHERE id = ?", (notif_id,)).fetchone()
+    db.close()
+    return dict(row) if row else None
+
+
+def get_notifications(limit=50, unread_only=False):
+    """Retrieve notifications, ordered newest first."""
+    db = get_db()
+    query = """
+        SELECT n.*, p.name AS project_name
+        FROM notifications n
+        LEFT JOIN projects p ON p.id = n.project_id
+    """
+    params = []
+    if unread_only:
+        query += " WHERE n.read = 0"
+    query += " ORDER BY n.id DESC LIMIT ?"
+    params.append(limit)
+
+    rows = db.execute(query, params).fetchall()
+
+    unread_count = db.execute(
+        "SELECT COUNT(*) FROM notifications WHERE read = 0"
+    ).fetchone()[0]
+    db.close()
+
+    return {
+        "notifications": [dict(r) for r in rows],
+        "unread_count": unread_count,
+        "total": len(rows),
+    }
+
+
+def mark_notification_read(notification_id=None, mark_all=False):
+    """Mark a notification or all notifications as read."""
+    db = get_db()
+    if mark_all:
+        db.execute("UPDATE notifications SET read = 1 WHERE read = 0")
+    elif notification_id is not None:
+        db.execute("UPDATE notifications SET read = 1 WHERE id = ?", (notification_id,))
+    db.commit()
+    db.close()
+    return True
+
+
+def clear_notifications():
+    """Clear all notifications."""
+    db = get_db()
+    db.execute("DELETE FROM notifications")
+    db.commit()
+    db.close()
+    return True

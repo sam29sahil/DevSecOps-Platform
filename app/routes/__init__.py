@@ -4,6 +4,7 @@ from .pipelines import pipelines_bp
 from .reports import reports_bp
 from .containers import containers_bp
 from .aws import aws_bp
+from .deployments import deployments_bp, notifications_bp
 
 __all__ = [
     "projects_bp",
@@ -13,4 +14,6 @@ __all__ = [
     "reports_bp",
     "containers_bp",
     "aws_bp",
+    "deployments_bp",
+    "notifications_bp",
 ]

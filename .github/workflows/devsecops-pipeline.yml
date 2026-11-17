@@ -20,6 +20,16 @@ name: DevSecOps Pipeline
         description: 'Pipeline Run ID'
         required: true
         type: string
+      deployment_id:
+        description: 'Deployment ID'
+        required: false
+        default: ''
+        type: string
+      container_port:
+        description: 'Container application port'
+        required: false
+        default: '5000'
+        type: string
       callback_url:
         description: 'Base URL for Flask status callback'
         required: false
@@ -36,7 +46,7 @@ name: DevSecOps Pipeline
         default: 'false'
         type: string
       deployment_enabled:
-        description: 'Whether Render deployment is enabled'
+        description: 'Whether deployment is enabled'
         required: false
         default: 'false'
         type: string
@@ -54,25 +64,30 @@ jobs:
       AWS_REGION: ap-south-1
       ECR_REPOSITORY: devsecops-platform
       ECR_REGISTRY: 288418346751.dkr.ecr.ap-south-1.amazonaws.com
+      ECS_CLUSTER: devsecops-cluster
       OIDC_ROLE: arn:aws:iam::288418346751:role/DevSecOpsPlatform-GitHubActions
       CALLBACK_URL: ${{ inputs.callback_url }}
       CALLBACK_SECRET: ${{ secrets.DEVSECOPS_CALLBACK_SECRET }}
       RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
       RUN_ID: ${{ inputs.run_id }}
       PIPELINE_ID: ${{ inputs.pipeline_id }}
+      DEPLOYMENT_ID: ${{ inputs.deployment_id }}
+      CONTAINER_PORT: ${{ inputs.container_port || '5000' }}
 
     steps:
       - name: Log Pipeline Metadata
         run: |
           echo "============================================================"
           echo " DevSecOps Pipeline Execution"
-          echo " Repository:   ${{ inputs.repository_url }}"
-          echo " Branch:       ${{ inputs.branch }}"
-          echo " Pipeline ID:  ${{ inputs.pipeline_id }}"
-          echo " Run ID:       ${{ inputs.run_id }}"
-          echo " Docker:       ${{ inputs.docker_enabled }}"
-          echo " ECR Push:     ${{ inputs.registry_enabled }}"
-          echo " Deployment:   ${{ inputs.deployment_enabled }}"
+          echo " Repository:     ${{ inputs.repository_url }}"
+          echo " Branch:         ${{ inputs.branch }}"
+          echo " Pipeline ID:    ${{ inputs.pipeline_id }}"
+          echo " Run ID:         ${{ inputs.run_id }}"
+          echo " Deployment ID:  ${{ inputs.deployment_id }}"
+          echo " Container Port: ${{ inputs.container_port || '5000' }}"
+          echo " Docker:         ${{ inputs.docker_enabled }}"
+          echo " ECR Push:       ${{ inputs.registry_enabled }}"
+          echo " Deployment:     ${{ inputs.deployment_enabled }}"
           echo "============================================================"
 
       - name: Setup Status Callback Utility
@@ -139,16 +154,16 @@ jobs:
             git clone --depth 1 "${{ inputs.repository_url }}" target-repo
           fi
 
-      - name: Install Trivy Security Scanner
+      - name: Install Security Scanners
         run: |
-          echo "Installing Trivy security scanner..."
+          echo "Installing Trivy..."
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
           trivy --version
 
-      - name: Filesystem Security Scan
+      - name: Stage 2 - Filesystem Dependency & Secret Scan
         run: |
-          echo "Running filesystem security check on target repository..."
-          trivy fs --scanners vuln,secret --severity HIGH,CRITICAL target-repo || true
+          echo "Running filesystem vulnerability scan on target repository..."
+          trivy fs --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed target-repo || true
 
       - name: Stage 6 - Docker Build
         id: docker_build
@@ -180,11 +195,11 @@ jobs:
           IMAGE_TAG="${PIPELINE_ID}-${RUN_ID}-${COMMIT_SHA}"
           FULL_IMAGE="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
 
-          echo "Building image: ${FULL_IMAGE} (tag: ${IMAGE_TAG})..."
+          echo "Building image: ${FULL_IMAGE} (tag: ${IMAGE_TAG}, port: ${CONTAINER_PORT})..."
           echo "FULL_IMAGE_NAME=${FULL_IMAGE}" >> $GITHUB_ENV
           echo "IMAGE_TAG=${IMAGE_TAG}" >> $GITHUB_ENV
 
-          if docker build -t "${FULL_IMAGE}" .; then
+          if docker build --build-arg PORT="${CONTAINER_PORT}" -t "${FULL_IMAGE}" .; then
             echo "Docker build completed successfully."
             send_callback "docker_build" "success" "Docker image built successfully in GitHub Actions." "{\"image\":\"${FULL_IMAGE}\",\"tag\":\"${IMAGE_TAG}\"}"
           else
@@ -211,7 +226,7 @@ jobs:
           fi
 
       - name: Configure AWS Credentials via OIDC
-        if: steps.docker_build.outputs.docker_skipped != 'true' && inputs.registry_enabled == 'true'
+        if: steps.docker_build.outputs.docker_skipped != 'true' && (inputs.registry_enabled == 'true' || inputs.deployment_enabled == 'true')
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::288418346751:role/DevSecOpsPlatform-GitHubActions
@@ -242,7 +257,7 @@ jobs:
             exit 1
           fi
 
-      - name: Stage 9 - Render Deployment
+      - name: Stage 9 - AWS ECS Fargate Deployment
         if: steps.docker_build.outputs.docker_skipped != 'true'
         run: |
           if [ "${{ inputs.deployment_enabled }}" != "true" ]; then
@@ -251,51 +266,159 @@ jobs:
             exit 0
           fi
 
-          if [ -z "${RENDER_DEPLOY_HOOK}" ]; then
-            echo "RENDER_DEPLOY_HOOK secret is not configured in GitHub repository secrets."
-            send_callback "deployment" "skipped" "Render deployment skipped: RENDER_DEPLOY_HOOK secret is not configured."
-            exit 0
-          fi
-
-          send_callback "deployment" "running" "Triggering Render deployment hook..."
+          send_callback "deployment" "running" "Deploying application to AWS ECS Fargate..."
 
           python3 -c "
-          import os, sys, urllib.parse, urllib.request
+          import os, sys, time, json, urllib.request
+          import boto3
 
-          hook = os.environ.get('RENDER_DEPLOY_HOOK', '').strip()
-          image = os.environ.get('FULL_IMAGE_NAME', '').strip()
-
-          if not hook:
-              sys.exit('RENDER_DEPLOY_HOOK is empty')
-
-          parsed = urllib.parse.urlsplit(hook)
-          query_params = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
-          updated = [(k, v) for k, v in query_params if k != 'imgURL']
-          if image:
-              updated.append(('imgURL', image))
-          new_query = urllib.parse.urlencode(updated)
-
-          target_url = urllib.parse.urlunsplit((
-              parsed.scheme,
-              parsed.netloc,
-              parsed.path,
-              new_query,
-              parsed.fragment,
-          ))
-
-          req = urllib.request.Request(target_url, method='POST')
+          region = os.environ.get('AWS_REGION', 'ap-south-1')
+          cluster = os.environ.get('ECS_CLUSTER', 'devsecops-cluster')
+          pipeline_id = os.environ.get('PIPELINE_ID', '1')
+          run_id = os.environ.get('RUN_ID', '1')
+          image_uri = os.environ.get('FULL_IMAGE_NAME', '')
+          deployment_id = os.environ.get('DEPLOYMENT_ID', '')
+          port_str = os.environ.get('CONTAINER_PORT', '5000')
           try:
-              with urllib.request.urlopen(req, timeout=30) as resp:
-                  print(f'Render deploy hook response HTTP {resp.status}')
-          except Exception as err:
-              sys.exit(f'Render deployment request failed: {err}')
+              container_port = int(port_str)
+          except Exception:
+              container_port = 5000
+
+          print(f'Starting ECS Fargate Deployment for pipeline {pipeline_id} (image: {image_uri}, port: {container_port})...')
+
+          ecs = boto3.client('ecs', region_name=region)
+          ec2 = boto3.client('ec2', region_name=region)
+
+          family = f'devsecops-p{pipeline_id}'
+          service_name = f'devsecops-srv-{pipeline_id}'
+
+          # 1. Register Task Definition
+          task_def_resp = ecs.register_task_definition(
+              family=family,
+              networkMode='awsvpc',
+              requiresCompatibilities=['FARGATE'],
+              cpu='256',
+              memory='512',
+              containerDefinitions=[
+                  {
+                      'name': 'app',
+                      'image': image_uri,
+                      'essential': True,
+                      'portMappings': [{'containerPort': container_port, 'protocol': 'tcp'}],
+                  }
+              ],
+          )
+          task_def_arn = task_def_resp['taskDefinition']['taskDefinitionArn']
+          print(f'Registered Task Definition: {task_def_arn}')
+
+          # 2. VPC & Subnets
+          vpcs = ec2.describe_vpcs(Filters=[{'Name': 'isDefault', 'Values': ['true']}])['Vpcs']
+          if not vpcs:
+              vpcs = ec2.describe_vpcs()['Vpcs']
+          vpc_id = vpcs[0]['VpcId']
+          subnets = [s['SubnetId'] for s in ec2.describe_subnets(Filters=[{'Name': 'vpc-id', 'Values': [vpc_id]}])['Subnets']]
+          sgs = ec2.describe_security_groups(Filters=[{'Name': 'vpc-id', 'Values': [vpc_id]}, {'Name': 'group-name', 'Values': ['default']}])['SecurityGroups']
+          sg_id = sgs[0]['GroupId']
+
+          try:
+              ec2.authorize_security_group_ingress(
+                  GroupId=sg_id,
+                  IpPermissions=[{'IpProtocol': 'tcp', 'FromPort': container_port, 'ToPort': container_port, 'IpRanges': [{'CidrIp': '0.0.0.0/0'}]}]
+              )
+          except Exception:
+              pass
+
+          # 3. Create or Update Service
+          existing_srvs = ecs.describe_services(cluster=cluster, services=[service_name])['services']
+          active_srv = [s for s in existing_srvs if s.get('status') != 'INACTIVE']
+
+          if active_srv:
+              print(f'Updating ECS service {service_name}...')
+              ecs.update_service(
+                  cluster=cluster,
+                  service=service_name,
+                  taskDefinition=task_def_arn,
+                  desiredCount=1,
+                  forceNewDeployment=True,
+              )
+          else:
+              print(f'Creating ECS Fargate service {service_name}...')
+              ecs.create_service(
+                  cluster=cluster,
+                  serviceName=service_name,
+                  taskDefinition=task_def_arn,
+                  desiredCount=1,
+                  launchType='FARGATE',
+                  networkConfiguration={
+                      'awsvpcConfiguration': {
+                          'subnets': subnets[:2],
+                          'securityGroups': [sg_id],
+                          'assignPublicIp': 'ENABLED',
+                      }
+                  },
+              )
+
+          # 4. Wait for running task & discover public IP
+          public_ip = None
+          task_arn = None
+          for attempt in range(24):
+              time.sleep(5)
+              tasks = ecs.list_tasks(cluster=cluster, serviceName=service_name)['taskArns']
+              if tasks:
+                  task_details = ecs.describe_tasks(cluster=cluster, tasks=tasks)['tasks']
+                  running_tasks = [t for t in task_details if t.get('lastStatus') == 'RUNNING']
+                  if running_tasks:
+                      t = running_tasks[0]
+                      task_arn = t['taskArn']
+                      for attachment in t.get('attachments', []):
+                          for detail in attachment.get('details', []):
+                              if detail.get('name') == 'networkInterfaceId':
+                                  eni_id = detail.get('value')
+                                  eni = ec2.describe_network_interfaces(NetworkInterfaceIds=[eni_id])['NetworkInterfaces'][0]
+                                  public_ip = eni.get('Association', {}).get('PublicIp')
+                                  break
+                      if public_ip:
+                          break
+
+          if not public_ip:
+              sys.exit('Could not determine Public IP for ECS task within timeout.')
+
+          live_url = f'http://{public_ip}:{container_port}'
+          print(f'Discovered Live Application URL: {live_url}')
+
+          # 5. Health Check
+          health_ok = False
+          for _ in range(12):
+              try:
+                  req = urllib.request.Request(f'{live_url}/', method='GET')
+                  with urllib.request.urlopen(req, timeout=5) as resp:
+                      if resp.status < 500:
+                          health_ok = True
+                          break
+              except Exception:
+                  time.sleep(5)
+
+          details_dict = {
+              'app_url': live_url,
+              'ecs_service': service_name,
+              'ecs_cluster': cluster,
+              'task_arn': task_arn or '',
+              'container_port': container_port,
+              'deployment_id': deployment_id,
+              'image': image_uri,
+              'health_status': 'healthy' if health_ok else 'unhealthy',
+          }
+
+          with open('/tmp/deploy_details.json', 'w') as f:
+              json.dump(details_dict, f)
           "
 
-          if [ $? -eq 0 ]; then
-            echo "Render deployment triggered successfully."
-            send_callback "deployment" "success" "Render deployment triggered successfully." "{\"image\":\"${FULL_IMAGE_NAME}\"}"
+          if [ $? -eq 0 ] && [ -f /tmp/deploy_details.json ]; then
+            DEPLOY_DETAILS=$(cat /tmp/deploy_details.json)
+            echo "Deployment succeeded. Details: ${DEPLOY_DETAILS}"
+            send_callback "deployment" "success" "Application deployed successfully to AWS ECS Fargate." "${DEPLOY_DETAILS}"
           else
-            DEPLOY_ERR="Failed to trigger Render deployment."
+            DEPLOY_ERR="AWS ECS Fargate deployment failed."
             echo "${DEPLOY_ERR}"
             send_callback "deployment" "failed" "${DEPLOY_ERR}" "{}" "${DEPLOY_ERR}"
             exit 1

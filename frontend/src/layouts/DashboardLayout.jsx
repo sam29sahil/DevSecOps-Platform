@@ -1,4 +1,5 @@
 import { NavLink } from "react-router-dom";
+import NotificationCenter from "../components/NotificationCenter";
 
 function DashboardLayout({ children }) {
   return (
@@ -39,6 +40,11 @@ function DashboardLayout({ children }) {
             <NavLink to="/pipelines" className="nav-link">
               <span className="nav-icon">⌁</span>
               Pipelines
+            </NavLink>
+
+            <NavLink to="/deployments" className="nav-link">
+              <span className="nav-icon">☁</span>
+              Deployments
             </NavLink>
           </div>
 
@@ -147,9 +153,7 @@ function DashboardLayout({ children }) {
               <kbd>Ctrl K</kbd>
             </div>
 
-            <button className="topbar-icon">
-              ◇
-            </button>
+            <NotificationCenter />
 
             <div className="user-profile">
 

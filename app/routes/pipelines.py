@@ -22,6 +22,11 @@ from app.models import (
     get_projects,
     update_scan,
     get_db,
+    create_deployment,
+    update_deployment,
+    get_deployments,
+    get_latest_deployment,
+    create_notification,
 )
 
 from app.scanners.code_scanner import CodeScanner
@@ -129,6 +134,14 @@ def run_row_to_dict(row):
 
     deployment_stage = next((s for s in run["stages"] if s.get("id") == "deployment"), None)
     run["deployment"] = "success" if (deployment_stage and deployment_stage.get("status") == "success") else None
+
+    if not run.get("app_url") and deployment_stage:
+        run["app_url"] = (
+            deployment_stage.get("details", {}).get("app_url")
+            or deployment_stage.get("details", {}).get("url")
+        )
+    if not run.get("deployment_id") and deployment_stage:
+        run["deployment_id"] = deployment_stage.get("details", {}).get("deployment_id")
 
     return run
 
@@ -289,9 +302,11 @@ def save_pipeline_run(run):
                 findings_json,
                 security_score,
                 quality_gate_json,
-                error
+                error,
+                app_url,
+                deployment_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run["pipeline_id"],
@@ -315,6 +330,8 @@ def save_pipeline_run(run):
                 if run.get("quality_gate") is not None
                 else None,
                 run.get("error"),
+                run.get("app_url"),
+                run.get("deployment_id"),
             ),
         )
 
@@ -338,7 +355,9 @@ def save_pipeline_run(run):
                 findings_json = ?,
                 security_score = ?,
                 quality_gate_json = ?,
-                error = ?
+                error = ?,
+                app_url = ?,
+                deployment_id = ?
             WHERE id = ?
             """,
             (
@@ -363,6 +382,8 @@ def save_pipeline_run(run):
                 if run.get("quality_gate") is not None
                 else None,
                 run.get("error"),
+                run.get("app_url"),
+                run.get("deployment_id"),
                 run["id"],
             ),
         )
@@ -540,6 +561,8 @@ def dispatch_github_workflow(
     docker_enabled=True,
     registry_enabled=False,
     deployment_enabled=False,
+    container_port=5000,
+    deployment_id="",
 ):
     """
     Dispatch the GitHub Actions devsecops-pipeline.yml workflow.
@@ -573,6 +596,8 @@ def dispatch_github_workflow(
             "branch": branch or "main",
             "pipeline_id": str(pipeline_id),
             "run_id": str(run_id),
+            "deployment_id": str(deployment_id or ""),
+            "container_port": str(container_port or 5000),
             "callback_url": callback_url,
             "docker_enabled": "true" if docker_enabled else "false",
             "registry_enabled": "true" if registry_enabled else "false",
@@ -2035,7 +2060,27 @@ def run_pipeline(pipeline_id):
     }
     run = save_pipeline_run(run)
 
-    pipeline["status"] = "running"
+    create_notification(
+        title="Pipeline Started",
+        message=f"Pipeline '{pipeline['name']}' started for project '{project.get('name', 'App')}'.",
+        event_type="pipeline_started",
+        status="info",
+        project_id=project_id,
+        pipeline_run_id=run["id"],
+    )
+
+    if pipeline.get("deployment_enabled"):
+        dep = create_deployment(
+            project_id=project_id,
+            pipeline_run_id=run["id"],
+            app_name=project.get("name") or pipeline["name"],
+            repository_url=pipeline.get("repository_url", ""),
+            branch=pipeline.get("branch", "main"),
+            container_port=project.get("app_port", 5000),
+            status="pending",
+        )
+        run["deployment_id"] = dep["deployment_id"]
+        run = save_pipeline_run(run)
     pipeline["last_run"] = started_at
     pipeline["last_run_id"] = run["id"]
     pipeline["updated_at"] = started_at
@@ -2441,6 +2486,8 @@ def run_pipeline(pipeline_id):
                 docker_enabled=pipeline["docker_enabled"],
                 registry_enabled=pipeline["registry_enabled"],
                 deployment_enabled=pipeline.get("deployment_enabled", False),
+                container_port=project.get("app_port", 5000),
+                deployment_id=run.get("deployment_id", ""),
             )
 
             return jsonify(
@@ -3045,16 +3092,122 @@ def github_status_callback(run_id):
             "error": f"Stage '{stage_id}' not found in pipeline run.",
         }), 400
 
-    if stage_id == "docker_build" and status == "success":
-        if details.get("image"):
-            run["docker_image"] = details["image"]
+    project_id = pipeline.get("project_id") if pipeline else None
+    app_name = pipeline.get("name") if pipeline else "Application"
 
-    elif stage_id == "registry_push" and status == "success":
-        if details.get("image"):
-            run["registry_image"] = details["image"]
+    if stage_id == "docker_build":
+        if status == "running":
+            create_notification(
+                title="Docker Build Started",
+                message=f"Building Docker image for {app_name}...",
+                event_type="docker_build",
+                status="info",
+                project_id=project_id,
+                pipeline_run_id=run_id,
+            )
+        elif status == "success":
+            if details.get("image"):
+                run["docker_image"] = details["image"]
+            create_notification(
+                title="Docker Image Built",
+                message=f"Docker container image built successfully for {app_name}.",
+                event_type="docker_built",
+                status="success",
+                project_id=project_id,
+                pipeline_run_id=run_id,
+            )
 
-    elif stage_id == "deployment" and status == "success":
-        run["deployment"] = "success"
+    elif stage_id == "container_scan":
+        if status == "success":
+            create_notification(
+                title="Container Security Scan Passed",
+                message=f"Trivy container security check passed for {app_name}.",
+                event_type="security_completed",
+                status="success",
+                project_id=project_id,
+                pipeline_run_id=run_id,
+            )
+
+    elif stage_id == "registry_push":
+        if status == "running":
+            create_notification(
+                title="AWS ECR Push Started",
+                message=f"Pushing image to Amazon ECR for {app_name}...",
+                event_type="ecr_pushed",
+                status="info",
+                project_id=project_id,
+                pipeline_run_id=run_id,
+            )
+        elif status == "success":
+            if details.get("image"):
+                run["registry_image"] = details["image"]
+            create_notification(
+                title="Image Pushed to AWS ECR",
+                message=f"Container image successfully pushed to Amazon ECR for {app_name}.",
+                event_type="ecr_pushed",
+                status="success",
+                project_id=project_id,
+                pipeline_run_id=run_id,
+            )
+
+    elif stage_id == "deployment":
+        if status == "running":
+            create_notification(
+                title="AWS ECS Deployment Started",
+                message=f"Deploying {app_name} to AWS ECS Fargate...",
+                event_type="ecs_started",
+                status="info",
+                project_id=project_id,
+                pipeline_run_id=run_id,
+            )
+        elif status == "success":
+            run["deployment"] = "success"
+            app_url = details.get("app_url") or details.get("url")
+            if app_url:
+                run["app_url"] = app_url
+
+            existing_deps = get_deployments(project_id=project_id) if project_id else []
+            matching_dep = next((d for d in existing_deps if d.get("pipeline_run_id") == run_id), None)
+            dep_id = None
+            if matching_dep:
+                dep_id = matching_dep["deployment_id"]
+                update_deployment(
+                    matching_dep["id"],
+                    status="deployed",
+                    health_status=details.get("health_status", "healthy"),
+                    app_url=app_url or matching_dep.get("app_url"),
+                    image_uri=details.get("image") or run.get("registry_image") or matching_dep.get("image_uri"),
+                    ecs_service=details.get("ecs_service") or matching_dep.get("ecs_service"),
+                    ecs_cluster=details.get("ecs_cluster") or matching_dep.get("ecs_cluster"),
+                    completed_at=utc_now(),
+                )
+            else:
+                dep = create_deployment(
+                    project_id=project_id,
+                    pipeline_run_id=run_id,
+                    app_name=app_name,
+                    repository_url=run.get("repository_url", ""),
+                    branch=run.get("branch", "main"),
+                    image_uri=details.get("image") or run.get("registry_image", ""),
+                    ecs_cluster=details.get("ecs_cluster", "devsecops-cluster"),
+                    ecs_service=details.get("ecs_service", ""),
+                    container_port=details.get("container_port", 5000),
+                    status="deployed",
+                    health_status=details.get("health_status", "healthy"),
+                    app_url=app_url or "",
+                )
+                dep_id = dep["deployment_id"]
+                run["deployment_id"] = dep_id
+
+            create_notification(
+                title="Application Deployed Successfully",
+                message=f"Your application '{app_name}' has been deployed successfully to AWS ECS Fargate! Live URL: {app_url or 'Available'}",
+                event_type="deployed_success",
+                status="success",
+                project_id=project_id,
+                deployment_id=dep_id,
+                pipeline_run_id=run_id,
+            )
 
     if status == "failed":
         run["status"] = "failed"
@@ -3063,6 +3216,40 @@ def github_status_callback(run_id):
             run["error"] = f"{message} ({error_info})"
         else:
             run["error"] = error_info or message or f"Stage '{stage_id}' failed in GitHub Actions."
+
+        if stage_id == "deployment":
+            is_health_fail = "health" in (message + " " + (error_info or "")).lower()
+            event_type = "health_check_failed" if is_health_fail else "deploy_failed"
+            title = "Application Health Check Failed" if is_health_fail else "Deployment Failed"
+
+            existing_deps = get_deployments(project_id=project_id) if project_id else []
+            matching_dep = next((d for d in existing_deps if d.get("pipeline_run_id") == run_id), None)
+            if matching_dep:
+                update_deployment(
+                    matching_dep["id"],
+                    status="failed",
+                    health_status="unhealthy" if is_health_fail else "failed",
+                    error_message=run["error"],
+                    completed_at=utc_now(),
+                )
+
+            create_notification(
+                title=title,
+                message=f"{title} for {app_name}: {run['error']}",
+                event_type=event_type,
+                status="error",
+                project_id=project_id,
+                pipeline_run_id=run_id,
+            )
+        else:
+            create_notification(
+                title=f"Pipeline Stage Failed: {stage_id.replace('_', ' ').title()}",
+                message=f"{app_name} pipeline failed at stage '{stage_id}': {run['error']}",
+                event_type="deploy_failed",
+                status="error",
+                project_id=project_id,
+                pipeline_run_id=run_id,
+            )
         if pipeline:
             pipeline["status"] = "failed"
             pipeline["last_error"] = run["error"]
