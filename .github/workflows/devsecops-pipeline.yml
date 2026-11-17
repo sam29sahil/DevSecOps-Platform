@@ -372,81 +372,65 @@ jobs:
           task_def_arn = task_def_resp['taskDefinition']['taskDefinitionArn']
           print(f'Registered Task Definition: {task_def_arn}')
 
-          # 2. VPC & Dedicated Subnets/Security Group
-          vpcs = ec2.describe_vpcs(Filters=[{'Name': 'isDefault', 'Values': ['true']}])['Vpcs']
-          if not vpcs:
-              vpcs = ec2.describe_vpcs()['Vpcs']
-          vpc_id = vpcs[0]['VpcId']
-          subnets = [s['SubnetId'] for s in ec2.describe_subnets(Filters=[{'Name': 'vpc-id', 'Values': [vpc_id]}])['Subnets']]
+          # 2. VPC, Subnets & Dedicated Security Group (sg-045d13fc2f68c4551 / devsecops-fargate-sg)
+          sg_id = 'sg-045d13fc2f68c4551'
+          expected_vpc_id = 'vpc-060e8d89b763e19c3'
 
-          # Use dedicated security group 'devsecops-fargate-sg' if available, otherwise default
-          sgs = ec2.describe_security_groups(
-              Filters=[
-                  {'Name': 'vpc-id', 'Values': [vpc_id]},
-                  {'Name': 'group-name', 'Values': ['devsecops-fargate-sg']}
-              ]
-          )['SecurityGroups']
-          if sgs:
-              sg_id = sgs[0]['GroupId']
-              print(f'Using dedicated security group: {sg_id} (devsecops-fargate-sg)')
-          else:
-              sgs = ec2.describe_security_groups(
-                  Filters=[
-                      {'Name': 'vpc-id', 'Values': [vpc_id]},
-                      {'Name': 'group-name', 'Values': ['default']}
-                  ]
-              )['SecurityGroups']
-              sg_id = sgs[0]['GroupId']
-              print(f'Using fallback security group: {sg_id} (default)')
+          sg_resp = ec2.describe_security_groups(GroupIds=[sg_id])['SecurityGroups']
+          if not sg_resp:
+              sys.exit(f'Dedicated ECS security group {sg_id} was not found in region {region}.')
 
-          # Configure least-privilege security group ingress for application port only
-          try:
-              ec2.authorize_security_group_ingress(
-                  GroupId=sg_id,
-                  IpPermissions=[
-                      {
-                          'IpProtocol': 'tcp',
-                          'FromPort': container_port,
-                          'ToPort': container_port,
-                          'IpRanges': [{'CidrIp': '0.0.0.0/0', 'Description': f'DevSecOps app port {container_port}'}]
-                      }
-                  ]
-              )
-              print(f'Authorized inbound TCP port {container_port} on security group {sg_id}')
-          except Exception as e:
-              if 'InvalidPermission.Duplicate' in str(e):
-                  print(f'Inbound TCP port {container_port} already authorized on security group {sg_id}')
-              else:
-                  print(f'Warning authorizing ingress on {sg_id}: {e}')
+          sg_info = sg_resp[0]
+          sg_vpc_id = sg_info.get('VpcId')
+          sg_name = sg_info.get('GroupName', '')
+          if not sg_vpc_id:
+              sys.exit(f'Dedicated ECS security group {sg_id} has no associated VPC.')
+          if sg_vpc_id != expected_vpc_id:
+              sys.exit(f'Security group {sg_id} belongs to VPC {sg_vpc_id}, expected {expected_vpc_id}.')
+
+          subnet_objs = ec2.describe_subnets(Filters=[{'Name': 'vpc-id', 'Values': [sg_vpc_id]}])['Subnets']
+          if not subnet_objs:
+              sys.exit(f'No subnets found in VPC {sg_vpc_id} for security group {sg_id}.')
+
+          selected_subnets = subnet_objs[:2]
+          mismatched_subnets = [s['SubnetId'] for s in selected_subnets if s.get('VpcId') != sg_vpc_id]
+          if mismatched_subnets:
+              sys.exit(f'Subnet VPC mismatch for security group {sg_id} ({sg_vpc_id}): {mismatched_subnets}')
+
+          subnets = [s['SubnetId'] for s in selected_subnets]
+          print(f'Using dedicated security group: {sg_id} ({sg_name}) in VPC {sg_vpc_id} with subnets {subnets}')
+
+          network_config = {
+              'awsvpcConfiguration': {
+                  'subnets': subnets,
+                  'securityGroups': [sg_id],
+                  'assignPublicIp': 'ENABLED',
+              }
+          }
 
           # 3. Create or Update Service
           existing_srvs = ecs.describe_services(cluster=cluster, services=[service_name])['services']
           active_srv = [s for s in existing_srvs if s.get('status') != 'INACTIVE']
 
           if active_srv:
-              print(f'Updating ECS service {service_name}...')
+              print(f'Updating ECS service {service_name} with security group {sg_id}...')
               ecs.update_service(
                   cluster=cluster,
                   service=service_name,
                   taskDefinition=task_def_arn,
                   desiredCount=1,
+                  networkConfiguration=network_config,
                   forceNewDeployment=True,
               )
           else:
-              print(f'Creating ECS Fargate service {service_name}...')
+              print(f'Creating ECS Fargate service {service_name} with security group {sg_id}...')
               ecs.create_service(
                   cluster=cluster,
                   serviceName=service_name,
                   taskDefinition=task_def_arn,
                   desiredCount=1,
                   launchType='FARGATE',
-                  networkConfiguration={
-                      'awsvpcConfiguration': {
-                          'subnets': subnets[:2],
-                          'securityGroups': [sg_id],
-                          'assignPublicIp': 'ENABLED',
-                      }
-                  },
+                  networkConfiguration=network_config,
               )
 
           # 4. Wait until ECS reports service stable
