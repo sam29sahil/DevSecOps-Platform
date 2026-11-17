@@ -183,7 +183,7 @@ To guarantee that demonstrations and testing remain strictly within a student/co
 - **Python 3.11+** installed and on PATH
 - **Node.js 18+** & npm installed
 - **Git** installed and on PATH
-- **AWS CLI** configured (`aws sts get-caller-identity` returns account `288418346751`)
+- **AWS CLI** configured (`aws sts get-caller-identity` returns account `YOUR_AWS_ACCOUNT_ID`)
 
 ### Step 1: Clone Repository
 ```powershell
@@ -204,13 +204,13 @@ Create or verify `.env` in the root project folder:
 ```env
 FLASK_ENV=development
 FLASK_APP=app:create_app()
-SECRET_KEY=devsecops-master-secret-key-32chars
+SECRET_KEY=replace-with-a-long-random-secret
 AWS_REGION=ap-south-1
-AWS_ACCOUNT_ID=288418346751
+AWS_ACCOUNT_ID=YOUR_AWS_ACCOUNT_ID
 AWS_ECR_REPOSITORY=devsecops-platform
 AWS_ECS_CLUSTER=devsecops-cluster
-GITHUB_TOKEN=ghp_YourGitHubPersonalAccessToken
-GITHUB_CALLBACK_SECRET=devsecops-callback-secret-token
+GITHUB_TOKEN=your_github_token
+GITHUB_CALLBACK_SECRET=your_random_callback_secret
 GITHUB_REPOSITORY=sam29sahil/DevSecOps-Platform
 PIPELINE_EXECUTION_MODE=hosted
 ```
@@ -239,7 +239,7 @@ npm run dev
 To enable GitHub Actions to deploy to AWS without static access keys:
 
 ### 1. AWS IAM OIDC Role Configuration
-The AWS IAM Role `arn:aws:iam::288418346751:role/DevSecOpsPlatform-GitHubActions` must have the trust relationship configured for the repository:
+The AWS IAM Role `arn:aws:iam::<AWS_ACCOUNT_ID>:role/<YOUR_GITHUB_ACTIONS_ROLE>` must have the trust relationship configured for the repository:
 ```json
 {
   "Version": "2012-10-17",
@@ -247,7 +247,7 @@ The AWS IAM Role `arn:aws:iam::288418346751:role/DevSecOpsPlatform-GitHubActions
     {
       "Effect": "Allow",
       "Principal": {
-        "Federated": "arn:aws:iam::288418346751:oidc-provider/token.actions.githubusercontent.com"
+        "Federated": "arn:aws:iam::<AWS_ACCOUNT_ID>:oidc-provider/token.actions.githubusercontent.com"
       },
       "Action": "sts:AssumeRoleWithWebIdentity",
       "Condition": {
@@ -265,7 +265,7 @@ The AWS IAM Role `arn:aws:iam::288418346751:role/DevSecOpsPlatform-GitHubActions
 
 ### 2. GitHub Repository Secrets
 Under **Settings → Secrets and variables → Actions** in `sam29sahil/DevSecOps-Platform`:
-- `AWS_ROLE_TO_ASSUME`: `arn:aws:iam::288418346751:role/DevSecOpsPlatform-GitHubActions`
+- `AWS_ROLE_TO_ASSUME`: `arn:aws:iam::<AWS_ACCOUNT_ID>:role/<YOUR_GITHUB_ACTIONS_ROLE>`
 - `AWS_REGION`: `ap-south-1`
 - `BACKEND_CALLBACK_URL`: Your ngrok / webhook forwarding URL (for local laptop callbacks)
 - `BACKEND_CALLBACK_SECRET`: Value matching `GITHUB_CALLBACK_SECRET` in `.env`
