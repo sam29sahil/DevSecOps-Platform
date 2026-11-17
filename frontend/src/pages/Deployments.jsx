@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { Link } from "react-router-dom";
 import {
   ExternalLink,
@@ -29,6 +29,34 @@ import {
 import { formatDateTime } from "../utils/time";
 import "./Deployments.css";
 
+const ACTIVE_STATUSES = new Set([
+  "pending",
+  "queued",
+  "building",
+  "scanning",
+  "pushing",
+  "deploying",
+]);
+
+function getStageProgressMessage(status) {
+  const norm = String(status || "").toLowerCase();
+  switch (norm) {
+    case "queued":
+      return "Queued for execution — Dispatching GitHub Actions workflow...";
+    case "building":
+      return "Building Docker image on remote GitHub runner...";
+    case "scanning":
+      return "Running Trivy container security & vulnerability scan...";
+    case "pushing":
+      return "Pushing verified container image to Amazon ECR...";
+    case "deploying":
+      return "Deploying service to AWS ECS Fargate & registering task...";
+    case "pending":
+    default:
+      return "Initializing pipeline & deployment checks...";
+  }
+}
+
 function StatusBadge({ status }) {
   const norm = String(status || "").toLowerCase();
   let badgeClass = "badge-pending";
@@ -36,13 +64,28 @@ function StatusBadge({ status }) {
 
   if (norm === "deployed" || norm === "success" || norm === "running") {
     badgeClass = "badge-deployed";
-    label = "DEPLOYED";
+    label = "RUNNING";
   } else if (norm === "failed") {
     badgeClass = "badge-failed";
     label = "FAILED";
   } else if (norm === "stopped") {
     badgeClass = "badge-stopped";
     label = "STOPPED";
+  } else if (norm === "queued") {
+    badgeClass = "badge-queued";
+    label = "QUEUED";
+  } else if (norm === "building") {
+    badgeClass = "badge-building";
+    label = "BUILDING";
+  } else if (norm === "scanning") {
+    badgeClass = "badge-scanning";
+    label = "SCANNING";
+  } else if (norm === "pushing") {
+    badgeClass = "badge-pushing";
+    label = "PUSHING";
+  } else if (norm === "deploying") {
+    badgeClass = "badge-deploying";
+    label = "DEPLOYING";
   }
 
   return <span className={`dep-badge ${badgeClass}`}>{label}</span>;
@@ -60,13 +103,20 @@ function HealthBadge({ status }) {
   if (norm === "unhealthy" || norm === "failed") {
     return (
       <span className="health-badge unhealthy">
-        <span className="health-dot" /> UNHEALTHY
+        <span className="health-dot" /> {norm === "failed" ? "FAILED" : "UNHEALTHY"}
+      </span>
+    );
+  }
+  if (norm === "stopped") {
+    return (
+      <span className="health-badge unknown">
+        <span className="health-dot" /> STOPPED
       </span>
     );
   }
   return (
     <span className="health-badge unknown">
-      <span className="health-dot" /> {status ? status.toUpperCase() : "CHECKING"}
+      <span className="health-dot" /> {status ? status.toUpperCase() : "UNKNOWN"}
     </span>
   );
 }
@@ -85,7 +135,12 @@ export default function Deployments() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
+  const deploymentsRef = useRef([]);
+  const isFetchingRef = useRef(false);
+
   async function loadData(silent = false) {
+    if (isFetchingRef.current) return;
+    isFetchingRef.current = true;
     if (!silent) setLoading(true);
     try {
       const [depsData, statsData] = await Promise.all([
@@ -94,7 +149,9 @@ export default function Deployments() {
       ]);
 
       if (depsData && depsData.success) {
-        setDeployments(depsData.deployments || []);
+        const list = depsData.deployments || [];
+        setDeployments(list);
+        deploymentsRef.current = list;
       }
       if (statsData && statsData.success) {
         setStats(statsData.stats || {});
@@ -103,16 +160,22 @@ export default function Deployments() {
     } catch (err) {
       if (!silent) setError(err.message || "Failed to load deployments.");
     } finally {
+      isFetchingRef.current = false;
       if (!silent) setLoading(false);
     }
   }
 
-  // Automatic real-time updates via 4-second polling
+  // Smart polling: polls every 5s ONLY while active deployments are progressing
   useEffect(() => {
     loadData(false);
     const interval = setInterval(() => {
-      loadData(true);
-    }, 4000);
+      const hasActive = (deploymentsRef.current || []).some((d) =>
+        ACTIVE_STATUSES.has(String(d.status || "").toLowerCase())
+      );
+      if (hasActive && !isFetchingRef.current) {
+        loadData(true);
+      }
+    }, 5000);
     return () => clearInterval(interval);
   }, []);
 
@@ -379,6 +442,20 @@ export default function Deployments() {
                         </div>
                       )}
 
+                      {dep.github_run_url && (
+                        <div className="card-meta-item">
+                          <span className="meta-label">GitHub Run</span>
+                          <a
+                            href={dep.github_run_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="meta-val meta-link"
+                          >
+                            #{dep.github_run_id || "Actions Run"} ↗
+                          </a>
+                        </div>
+                      )}
+
                       {dep.error_message && (
                         <div className="card-error-box">
                           <AlertTriangle size={14} />
@@ -414,13 +491,16 @@ export default function Deployments() {
                       </div>
                     ) : dep.status === "failed" ? (
                       <div className="deploy-failed-notice">
-                        <AlertTriangle size={15} />
-                        <span>Deployment failed — No live endpoint created</span>
+                        <AlertTriangle size={16} className="deploy-failed-icon" />
+                        <div className="deploy-failed-body">
+                          <strong>Deployment Failed</strong>
+                          <p>{dep.error_message || "Deployment failed — No live endpoint created."}</p>
+                        </div>
                       </div>
                     ) : (
                       <div className="deploy-pending-notice">
                         <div className="spinner-small" />
-                        <span>Deploying to ECS Fargate... Standby</span>
+                        <span>{getStageProgressMessage(dep.status)}</span>
                       </div>
                     )}
 

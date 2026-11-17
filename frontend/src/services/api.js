@@ -373,6 +373,12 @@ export async function checkDeploymentHealth(identifier) {
   return request(`/deployments/${identifier}/health`);
 }
 
+export async function syncDeployment(identifier) {
+  return request(`/deployments/${identifier}/sync`, {
+    method: "POST",
+  });
+}
+
 /* =========================================================
    NOTIFICATIONS
 ========================================================= */

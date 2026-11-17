@@ -290,3 +290,68 @@ def test_callback_updates_live_url_and_deployment(client, test_project):
             n["event_type"] == "deployed_success" and live_url in n["message"]
             for n in notifs["notifications"]
         )
+
+
+def test_sync_deployment_transitions_pending_to_failed_when_pipeline_skipped(client, test_project):
+    from app.routes.deployments import sync_deployment_status
+
+    pipeline = create_pipeline_record(
+        name="Sync Test Pipeline",
+        description="Testing sync status",
+        branch="main",
+        repository_url=test_project["repository_url"],
+        project_id=test_project["id"],
+        deployment_enabled=True,
+    )
+
+    # Pipeline run completed locally where deployment stage was skipped
+    run = save_pipeline_run({
+        "id": None,
+        "pipeline_id": pipeline["id"],
+        "pipeline_name": pipeline["name"],
+        "status": "success",
+        "started_at": "2026-11-17T11:00:00",
+        "completed_at": "2026-11-17T11:01:00",
+        "repository_url": test_project["repository_url"],
+        "branch": "main",
+        "github_run_id": None,
+        "stages": [
+            {
+                "id": "deployment",
+                "name": "Deployment",
+                "status": "skipped",
+                "details": {
+                    "reason": "Local deployment skipped. Remote AWS ECS Fargate deployment executes via GitHub Actions."
+                },
+            }
+        ],
+    })
+
+    dep = create_deployment(
+        project_id=test_project["id"],
+        pipeline_run_id=run["id"],
+        app_name=test_project["name"],
+        repository_url=test_project["repository_url"],
+        status="pending",
+    )
+
+    synced = sync_deployment_status(dep)
+    assert synced["status"] == "failed"
+    assert synced["health_status"] == "failed"
+    assert "Workflow was not dispatched" in synced["error_message"]
+
+
+def test_sync_deployment_api_endpoint(client, test_project):
+    dep = create_deployment(
+        project_id=test_project["id"],
+        app_name=test_project["name"],
+        repository_url=test_project["repository_url"],
+        status="pending",
+    )
+
+    # Calling the sync endpoint
+    res = client.post(f"/api/deployments/{dep['deployment_id']}/sync")
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["success"] is True
+    assert "deployment" in data

@@ -622,6 +622,22 @@ def apply_stage_update(
     project_id = pipeline.get("project_id") if pipeline else None
     app_name = pipeline.get("name") if pipeline else "Application"
 
+    if status == "running":
+        stage_status_map = {
+            "docker_build": "building",
+            "container_scan": "scanning",
+            "registry_push": "pushing",
+            "deployment": "deploying",
+        }
+        if stage_id in stage_status_map:
+            try:
+                existing_deps = get_deployments(project_id=project_id) if project_id else []
+                matching_dep = next((d for d in existing_deps if d.get("pipeline_run_id") == run_id), None)
+                if matching_dep and str(matching_dep.get("status") or "").lower() not in ("deployed", "running", "failed", "stopped"):
+                    update_deployment(matching_dep["id"], status=stage_status_map[stage_id])
+            except Exception:
+                pass
+
     if stage_id == "docker_build":
         if status == "running":
             create_notification(
@@ -744,11 +760,11 @@ def apply_stage_update(
         else:
             run["error"] = error_info or message or f"Stage '{stage_id}' failed in GitHub Actions."
 
-        if stage_id == "deployment":
-            is_health_fail = "health" in (message + " " + (error_info or "")).lower()
-            event_type = "health_check_failed" if is_health_fail else "deploy_failed"
-            title = "Application Health Check Failed" if is_health_fail else "Deployment Failed"
+        is_health_fail = "health" in (message + " " + (error_info or "")).lower()
+        event_type = "health_check_failed" if is_health_fail else "deploy_failed"
+        title = "Application Health Check Failed" if is_health_fail else "Deployment Failed"
 
+        try:
             existing_deps = get_deployments(project_id=project_id) if project_id else []
             matching_dep = next((d for d in existing_deps if d.get("pipeline_run_id") == run_id), None)
             if matching_dep:
@@ -759,7 +775,10 @@ def apply_stage_update(
                     error_message=run["error"],
                     completed_at=utc_now(),
                 )
+        except Exception:
+            pass
 
+        if stage_id == "deployment":
             create_notification(
                 title=title,
                 message=f"{title} for {app_name}: {run['error']}",
@@ -877,6 +896,8 @@ def poll_github_workflow_run(
             run["github_run_id"] = github_run_id
             run["github_run_url"] = github_run_url
             save_pipeline_run(run)
+        if deployment_id:
+            update_deployment(deployment_id, github_run_id=github_run_id, github_run_url=github_run_url)
     except Exception:
         pass
 
@@ -1158,6 +1179,12 @@ def dispatch_github_workflow(
         raise RuntimeError(f"Failed to reach GitHub API: {str(e)}")
 
     dispatch_time = datetime.now(timezone.utc)
+
+    if deployment_id:
+        try:
+            update_deployment(deployment_id, status="queued")
+        except Exception:
+            pass
 
     # Start background polling thread for real-time local updates
     try:
@@ -3296,17 +3323,29 @@ def run_pipeline(pipeline_id):
                 run,
                 "deployment",
             )
+            skip_msg = "Local deployment skipped. Remote AWS ECS Fargate deployment executes via GitHub Actions."
             stage_finish(
                 run,
                 "deployment",
                 stage_timer,
                 status="skipped",
-                message="Local deployment skipped. Remote AWS ECS Fargate deployment executes via GitHub Actions.",
+                message=skip_msg,
                 details={
                     "status": "skipped",
-                    "message": "Local deployment skipped. Remote AWS ECS Fargate deployment executes via GitHub Actions.",
+                    "message": skip_msg,
                 },
             )
+            if run.get("deployment_id"):
+                try:
+                    update_deployment(
+                        run["deployment_id"],
+                        status="failed",
+                        health_status="failed",
+                        error_message="Deployment not executed: AWS ECS Fargate deployment requires remote GitHub Actions runner execution. Set PIPELINE_EXECUTION_MODE=hosted and configure GITHUB_TOKEN.",
+                        completed_at=utc_now(),
+                    )
+                except Exception:
+                    pass
         else:
             update_stage(
                 run,
@@ -3393,6 +3432,18 @@ def run_pipeline(pipeline_id):
         pipeline["status"] = "failed"
         pipeline["updated_at"] = failed_at
         pipeline["last_error"] = error_message
+
+        if run.get("deployment_id"):
+            try:
+                update_deployment(
+                    run["deployment_id"],
+                    status="failed",
+                    health_status="failed",
+                    error_message=f"Pipeline error: {error_message}",
+                    completed_at=failed_at,
+                )
+            except Exception:
+                pass
 
         if scan is not None:
 

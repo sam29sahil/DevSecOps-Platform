@@ -265,6 +265,10 @@ def init_db():
     dep_cols = {row["name"] for row in db.execute("PRAGMA table_info(deployments)").fetchall()}
     if "user_id" not in dep_cols:
         db.execute("ALTER TABLE deployments ADD COLUMN user_id TEXT DEFAULT 'default_user'")
+    if "github_run_id" not in dep_cols:
+        db.execute("ALTER TABLE deployments ADD COLUMN github_run_id INTEGER")
+    if "github_run_url" not in dep_cols:
+        db.execute("ALTER TABLE deployments ADD COLUMN github_run_url TEXT")
 
     # ========================================================
     # NOTIFICATIONS
@@ -856,6 +860,10 @@ def create_deployment(
     app_url="",
     error_message="",
     deployment_id=None,
+    github_run_id=None,
+    github_run_url=None,
+    completed_at=None,
+    user_id="default_user",
 ):
     """Create a new deployment record."""
     db = get_db()
@@ -888,10 +896,14 @@ def create_deployment(
             health_status,
             app_url,
             error_message,
+            github_run_id,
+            github_run_url,
+            completed_at,
+            user_id,
             created_at,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             deployment_id,
@@ -914,6 +926,10 @@ def create_deployment(
             health_status,
             app_url,
             error_message,
+            github_run_id,
+            github_run_url,
+            completed_at,
+            user_id or "default_user",
             now,
             now,
         ),
@@ -952,6 +968,19 @@ def get_deployment(identifier):
     if row is None:
         return None
     return dict(row)
+
+
+def get_pipeline_run_record(run_id):
+    """Return raw pipeline run dict by id."""
+    if not run_id:
+        return None
+    try:
+        db = get_db()
+        row = db.execute("SELECT * FROM pipeline_runs WHERE id = ?", (int(run_id),)).fetchone()
+        db.close()
+        return dict(row) if row else None
+    except Exception:
+        return None
 
 
 def get_deployments(project_id=None):
@@ -1138,7 +1167,20 @@ def create_notification(
 
     row = db.execute("SELECT * FROM notifications WHERE id = ?", (notif_id,)).fetchone()
     db.close()
-    return dict(row) if row else None
+    return dict(row)
+
+
+def get_pipeline_run_record(run_id):
+    """Return raw pipeline run dict by id."""
+    if not run_id:
+        return None
+    try:
+        db = get_db()
+        row = db.execute("SELECT * FROM pipeline_runs WHERE id = ?", (int(run_id),)).fetchone()
+        db.close()
+        return dict(row) if row else None
+    except Exception:
+        return None if row else None
 
 
 def get_notifications(limit=50, unread_only=False):
