@@ -110,47 +110,66 @@ jobs:
 
       - name: Register ECS Task Definition
         id: task-def
+        env:
+          EXECUTION_ROLE_ARN: ${{ env.EXECUTION_ROLE_ARN }}
+          PLATFORM_IMAGE: ${{ env.PLATFORM_IMAGE }}
+          AWS_REGION: ${{ env.AWS_REGION }}
+          ECS_CLUSTER: ${{ env.ECS_CLUSTER }}
+          ECR_REPOSITORY: ${{ env.ECR_REPOSITORY }}
         run: |
-          TASK_DEF=$(cat <<EOF
-          {
-            "family": "devsecops-platform-task",
-            "networkMode": "awsvpc",
-            "requiresCompatibilities": ["FARGATE"],
-            "cpu": "512",
-            "memory": "1024",
-            "executionRoleArn": "${{ env.EXECUTION_ROLE_ARN }}",
-            "containerDefinitions": [
-              {
-                "name": "devsecops-platform",
-                "image": "${{ env.PLATFORM_IMAGE }}",
-                "essential": true,
-                "portMappings": [
+          python3 -c "
+          import os, json
+
+          task_def = {
+              'family': 'devsecops-platform-task',
+              'networkMode': 'awsvpc',
+              'requiresCompatibilities': ['FARGATE'],
+              'cpu': '512',
+              'memory': '1024',
+              'executionRoleArn': os.environ['EXECUTION_ROLE_ARN'],
+              'containerDefinitions': [
                   {
-                    "containerPort": 5000,
-                    "hostPort": 5000,
-                    "protocol": "tcp"
+                      'name': 'devsecops-platform',
+                      'image': os.environ['PLATFORM_IMAGE'],
+                      'essential': True,
+                      'portMappings': [
+                          {
+                              'containerPort': 5000,
+                              'hostPort': 5000,
+                              'protocol': 'tcp'
+                          }
+                      ],
+                      'healthCheck': {
+                          'command': [
+                              'CMD-SHELL',
+                              'python -c \"import urllib.request; urllib.request.urlopen(\\'http://127.0.0.1:5000/api/health\\', timeout=3)\"'
+                          ],
+                          'interval': 30,
+                          'timeout': 5,
+                          'retries': 3,
+                          'startPeriod': 60
+                      },
+                      'logConfiguration': {
+                          'logDriver': 'awslogs',
+                          'options': {
+                              'awslogs-group': '/ecs/devsecops-platform',
+                              'awslogs-region': os.environ['AWS_REGION'],
+                              'awslogs-stream-prefix': 'platform'
+                          }
+                      },
+                      'environment': [
+                          {'name': 'PORT', 'value': '5000'},
+                          {'name': 'AWS_REGION', 'value': os.environ['AWS_REGION']},
+                          {'name': 'AWS_ECS_CLUSTER', 'value': os.environ['ECS_CLUSTER']},
+                          {'name': 'AWS_ECR_REPOSITORY', 'value': os.environ['ECR_REPOSITORY']}
+                      ]
                   }
-                ],
-                "logConfiguration": {
-                  "logDriver": "awslogs",
-                  "options": {
-                    "awslogs-group": "/ecs/devsecops-platform",
-                    "awslogs-region": "${{ env.AWS_REGION }}",
-                    "awslogs-stream-prefix": "platform"
-                  }
-                },
-                "environment": [
-                  {"name": "PORT", "value": "5000"},
-                  {"name": "AWS_REGION", "value": "${{ env.AWS_REGION }}"},
-                  {"name": "AWS_ECS_CLUSTER", "value": "${{ env.ECS_CLUSTER }}"},
-                  {"name": "AWS_ECR_REPOSITORY", "value": "${{ env.ECR_REPOSITORY }}"}
-                ]
-              }
-            ]
+              ]
           }
-          EOF
-          )
-          echo "${TASK_DEF}" > /tmp/platform-task-def.json
+
+          with open('/tmp/platform-task-def.json', 'w') as f:
+              json.dump(task_def, f, indent=2)
+          "
           TASK_DEF_ARN=$(aws ecs register-task-definition --cli-input-json file:///tmp/platform-task-def.json --query 'taskDefinition.taskDefinitionArn' --output text)
           echo "Registered Task Definition: ${TASK_DEF_ARN}"
           echo "TASK_DEF_ARN=${TASK_DEF_ARN}" >> $GITHUB_ENV
@@ -193,55 +212,138 @@ jobs:
 
       - name: Verify Platform Health & Discover Live URL
         run: |
-          echo "Waiting for ECS task to reach RUNNING status..."
-          PUBLIC_IP=""
-          for attempt in $(seq 1 24); do
-            sleep 5
-            TASK_ARNS=$(aws ecs list-tasks --cluster ${{ env.ECS_CLUSTER }} --service-name ${{ env.ECS_SERVICE }} --desired-status RUNNING --query 'taskArns' --output text)
+          echo "============================================================"
+          echo " Starting Native ECS Container Health Verification"
+          echo " Cluster:         ${{ env.ECS_CLUSTER }}"
+          echo " Service:         ${{ env.ECS_SERVICE }}"
+          echo " Task Definition: ${{ env.TASK_DEF_ARN }}"
+          echo "============================================================"
+
+          TARGET_TASK_DEF="${{ env.TASK_DEF_ARN }}"
+          POLL_TIMEOUT=300
+          POLL_INTERVAL=10
+          ELAPSED=0
+          ACTIVE_TASK_ARN=""
+          CONTAINER_HEALTH="UNKNOWN"
+          TASK_STATUS=""
+
+          while [ ${ELAPSED} -lt ${POLL_TIMEOUT} ]; do
+            # 1. Retrieve active task ARNs for the service
+            TASK_ARNS=$(aws ecs list-tasks \
+              --cluster "${{ env.ECS_CLUSTER }}" \
+              --service-name "${{ env.ECS_SERVICE }}" \
+              --desired-status RUNNING \
+              --query 'taskArns' \
+              --output text 2>/dev/null || echo "")
+
             if [ -n "${TASK_ARNS}" ] && [ "${TASK_ARNS}" != "None" ]; then
-              ENI_ID=$(aws ecs describe-tasks --cluster ${{ env.ECS_CLUSTER }} --tasks ${TASK_ARNS} --query 'tasks[0].attachments[0].details[?name==`networkInterfaceId`].value' --output text)
-              if [ -n "${ENI_ID}" ] && [ "${ENI_ID}" != "None" ]; then
-                PUBLIC_IP=$(aws ec2 describe-network-interfaces --network-interface-ids ${ENI_ID} --query 'NetworkInterfaces[0].Association.PublicIp' --output text)
-                if [ -n "${PUBLIC_IP}" ] && [ "${PUBLIC_IP}" != "None" ]; then
-                  echo "Found Public IP: ${PUBLIC_IP}"
+              # 2. Inspect active tasks to find the task registered with TARGET_TASK_DEF
+              ACTIVE_TASK_ARN=$(aws ecs describe-tasks \
+                --cluster "${{ env.ECS_CLUSTER }}" \
+                --tasks ${TASK_ARNS} \
+                --query 'tasks[?taskDefinitionArn==`'"${TARGET_TASK_DEF}"'`].taskArn | [0]' \
+                --output text 2>/dev/null || echo "")
+
+              if [ -n "${ACTIVE_TASK_ARN}" ] && [ "${ACTIVE_TASK_ARN}" != "None" ]; then
+                TASK_STATUS=$(aws ecs describe-tasks \
+                  --cluster "${{ env.ECS_CLUSTER }}" \
+                  --tasks "${ACTIVE_TASK_ARN}" \
+                  --query 'tasks[0].lastStatus' \
+                  --output text 2>/dev/null || echo "UNKNOWN")
+
+                CONTAINER_HEALTH=$(aws ecs describe-tasks \
+                  --cluster "${{ env.ECS_CLUSTER }}" \
+                  --tasks "${ACTIVE_TASK_ARN}" \
+                  --query 'tasks[0].containers[0].healthStatus' \
+                  --output text 2>/dev/null || echo "UNKNOWN")
+
+                echo "[Elapsed: ${ELAPSED}s] Task: ${ACTIVE_TASK_ARN##*/} | Task Status: ${TASK_STATUS} | Container Health: ${CONTAINER_HEALTH}"
+
+                # 3. Check for successful container health
+                if [ "${TASK_STATUS}" = "RUNNING" ] && [ "${CONTAINER_HEALTH}" = "HEALTHY" ]; then
+                  echo "SUCCESS: Container health check verified as HEALTHY!"
                   break
                 fi
+
+                # 4. Check for task failure / premature stop
+                if [ "${TASK_STATUS}" = "STOPPED" ]; then
+                  STOP_REASON=$(aws ecs describe-tasks \
+                    --cluster "${{ env.ECS_CLUSTER }}" \
+                    --tasks "${ACTIVE_TASK_ARN}" \
+                    --query 'tasks[0].stoppedReason' \
+                    --output text 2>/dev/null || echo "Unknown")
+                  CONTAINER_REASON=$(aws ecs describe-tasks \
+                    --cluster "${{ env.ECS_CLUSTER }}" \
+                    --tasks "${ACTIVE_TASK_ARN}" \
+                    --query 'tasks[0].containers[0].reason' \
+                    --output text 2>/dev/null || echo "None")
+                  CONTAINER_EXIT=$(aws ecs describe-tasks \
+                    --cluster "${{ env.ECS_CLUSTER }}" \
+                    --tasks "${ACTIVE_TASK_ARN}" \
+                    --query 'tasks[0].containers[0].exitCode' \
+                    --output text 2>/dev/null || echo "None")
+
+                  echo "::error::ECS Task stopped unexpectedly."
+                  echo "Stopped Reason:    ${STOP_REASON}"
+                  echo "Container Reason:  ${CONTAINER_REASON}"
+                  echo "Exit Code:         ${CONTAINER_EXIT}"
+                  exit 1
+                fi
+
+                if [ "${CONTAINER_HEALTH}" = "UNHEALTHY" ]; then
+                  echo "::error::Container reported UNHEALTHY status."
+                  aws ecs describe-tasks --cluster "${{ env.ECS_CLUSTER }}" --tasks "${ACTIVE_TASK_ARN}" --query 'tasks[0].containers[0]' --output json || true
+                  exit 1
+                fi
+              else
+                echo "[Elapsed: ${ELAPSED}s] Waiting for task with revision ${TARGET_TASK_DEF##*/} to start..."
               fi
+            else
+              echo "[Elapsed: ${ELAPSED}s] No active tasks found yet for service ${{ env.ECS_SERVICE }}..."
             fi
-            echo "Waiting for task and ENI public IP (attempt ${attempt}/24)..."
+
+            sleep ${POLL_INTERVAL}
+            ELAPSED=$((ELAPSED + POLL_INTERVAL))
           done
 
-          if [ -z "${PUBLIC_IP}" ] || [ "${PUBLIC_IP}" = "None" ]; then
-            echo "Error: Could not retrieve Public IP for platform within timeout."
+          # 5. Enforce timeout check
+          if [ "${CONTAINER_HEALTH}" != "HEALTHY" ]; then
+            echo "::error::ECS Health Verification timed out after ${POLL_TIMEOUT}s."
+            echo "Final Task Status:     ${TASK_STATUS}"
+            echo "Final Health Status:   ${CONTAINER_HEALTH}"
+            if [ -n "${ACTIVE_TASK_ARN}" ] && [ "${ACTIVE_TASK_ARN}" != "None" ]; then
+              echo "Diagnostic dump for task ${ACTIVE_TASK_ARN}:"
+              aws ecs describe-tasks --cluster "${{ env.ECS_CLUSTER }}" --tasks "${ACTIVE_TASK_ARN}" --output json || true
+            fi
             exit 1
           fi
 
-          PLATFORM_URL="http://${PUBLIC_IP}:5000"
-          echo "Verifying platform HTTP health at ${PLATFORM_URL}/api/health..."
-          HEALTH_OK=false
-          for attempt in $(seq 1 12); do
-            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "${PLATFORM_URL}/api/health" || echo "000")
-            if [ "${HTTP_STATUS}" -ge 200 ] && [ "${HTTP_STATUS}" -lt 500 ]; then
-              echo "Health check passed (HTTP ${HTTP_STATUS})!"
-              HEALTH_OK=true
-              break
-            fi
-            ROOT_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "${PLATFORM_URL}/" || echo "000")
-            if [ "${ROOT_STATUS}" -ge 200 ] && [ "${ROOT_STATUS}" -lt 500 ]; then
-              echo "Health check passed on root / (HTTP ${ROOT_STATUS})!"
-              HEALTH_OK=true
-              break
-            fi
-            echo "Health probe attempt ${attempt}/12 returned HTTP ${HTTP_STATUS}, retrying in 5s..."
-            sleep 5
-          done
+          # 6. Public IP Discovery (Without attempting runner HTTP access)
+          echo "Discovering Public IP from Task Network Interface (ENI)..."
+          ENI_ID=$(aws ecs describe-tasks \
+            --cluster "${{ env.ECS_CLUSTER }}" \
+            --tasks "${ACTIVE_TASK_ARN}" \
+            --query 'tasks[0].attachments[0].details[?name==`networkInterfaceId`].value | [0]' \
+            --output text 2>/dev/null || echo "")
 
-          if [ "${HEALTH_OK}" != "true" ]; then
-            echo "Error: Platform health check failed at ${PLATFORM_URL}."
-            exit 1
+          PUBLIC_IP=""
+          if [ -n "${ENI_ID}" ] && [ "${ENI_ID}" != "None" ]; then
+            PUBLIC_IP=$(aws ec2 describe-network-interfaces \
+              --network-interface-ids "${ENI_ID}" \
+              --query 'NetworkInterfaces[0].Association.PublicIp' \
+              --output text 2>/dev/null || echo "")
+          fi
+
+          if [ -z "${PUBLIC_IP}" ] || [ "${PUBLIC_IP}" = "None" ]; then
+            echo "::warning::Could not determine Public IP address for active task."
+            PUBLIC_URL="http://[Pending-Public-IP]:5000"
+          else
+            PUBLIC_URL="http://${PUBLIC_IP}:5000"
           fi
 
           echo "============================================================"
           echo " DEVSECOPS PLATFORM DEPLOYED SUCCESSFULLY"
-          echo " Public Application URL: ${PLATFORM_URL}"
+          echo " Public Application URL: ${PUBLIC_URL}"
+          echo " Task ARN:               ${ACTIVE_TASK_ARN}"
+          echo " Container Health:       ${CONTAINER_HEALTH}"
           echo "============================================================"
