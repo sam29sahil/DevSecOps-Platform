@@ -31,6 +31,9 @@ def require_auth(optional=False):
     def decorator(f):
         @functools.wraps(f)
         def wrapper(*args, **kwargs):
+            if request.method == "OPTIONS":
+                return jsonify({"success": True}), 200
+
             auth_header = request.headers.get("Authorization", "").strip()
             api_key_header = request.headers.get("X-API-Key", "").strip()
             user_id_header = request.headers.get("X-User-ID", "").strip()

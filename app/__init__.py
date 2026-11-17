@@ -3,7 +3,7 @@ import os
 import sys
 from pathlib import Path
 from dotenv import load_dotenv
-from flask import Flask, jsonify, send_from_directory
+from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 
 # Reliably load .env from workspace root if it exists (skip when running test suites)
@@ -33,25 +33,65 @@ from app.routes import (
 )
 
 
+def get_cors_origins():
+    """
+    Compute allowed CORS origins from environment variables and dev defaults.
+    Never uses wildcard '*' with credentials.
+    Supports comma-separated CORS_ALLOWED_ORIGINS or FRONTEND_URL.
+    """
+    default_origins = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:5000",
+        "http://127.0.0.1:5000",
+    ]
+    origins = list(default_origins)
+    for env_var in ("CORS_ALLOWED_ORIGINS", "FRONTEND_URL"):
+        val = os.getenv(env_var, "").strip()
+        if val:
+            for item in val.split(","):
+                cleaned = item.strip().rstrip("/")
+                if cleaned and cleaned not in origins:
+                    origins.append(cleaned)
+    return origins
+
+
 def create_app():
     logging.basicConfig(
         level=logging.INFO,
         format="[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s",
     )
     app = Flask(__name__)
+
+    cors_origins = get_cors_origins()
     CORS(
         app,
         resources={
             r"/api/*": {
-                "origins": [
-                    "http://localhost:5173",
-                    "http://127.0.0.1:5173",
-                    "http://localhost:3000",
-                    "http://127.0.0.1:3000",
-                ]
+                "origins": cors_origins,
+                "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+                "allow_headers": [
+                    "Content-Type",
+                    "Authorization",
+                    "X-API-Key",
+                    "X-User-ID",
+                    "Accept",
+                    "Origin",
+                    "X-Requested-With",
+                ],
+                "expose_headers": ["Content-Type", "Authorization"],
+                "supports_credentials": True,
+                "max_age": 600,
             }
-        }
+        },
     )
+
+    @app.before_request
+    def handle_options_preflight():
+        if request.path.startswith("/api") and request.method == "OPTIONS":
+            return app.make_default_options_response()
 
     # Basic configuration
     app.config["JSON_SORT_KEYS"] = False

@@ -1,6 +1,18 @@
-const API_BASE_URL = 
-  import.meta.env.VITE_API_BASE_URL ||
-  "http://127.0.0.1:5000/api";
+export function getApiBaseUrl() {
+  const envUrl = (import.meta.env.VITE_API_BASE_URL || "").trim();
+  if (envUrl) {
+    const cleaned = envUrl.replace(/\/+$/, "");
+    return cleaned.endsWith("/api") ? cleaned : `${cleaned}/api`;
+  }
+  // In production build (served by backend or reverse proxy), use relative /api
+  if (import.meta.env.PROD) {
+    return "/api";
+  }
+  // In development, default to local Flask backend
+  return "http://127.0.0.1:5000/api";
+}
+
+const API_BASE_URL = getApiBaseUrl();
 
 /* =========================================================
    BASE REQUEST
@@ -30,11 +42,14 @@ async function request(endpoint, options = {}) {
     }
 
     if (!response.ok) {
-      throw new Error(
+      const errorMessage =
+        data?.message ||
         data?.error ||
-          data?.message ||
-          `Request failed with status ${response.status}`
-      );
+        `Request failed with status ${response.status}`;
+      const err = new Error(errorMessage);
+      err.status = response.status;
+      err.data = data;
+      throw err;
     }
 
     return data;
@@ -415,16 +430,4 @@ export async function clearAllNotifications() {
 
 export async function getHealth() {
   return request("/health");
-}
-
-/* =========================================================
-   API BASE URL
-========================================================= */
-
-/*
-  Useful when debugging frontend/backend connection.
-*/
-
-export function getApiBaseUrl() {
-  return API_BASE_URL;
 }

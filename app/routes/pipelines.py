@@ -37,6 +37,16 @@ from app.scanners.code_scanner import CodeScanner
 from app.services.aws_service import AwsService
 
 
+class QualityGateError(Exception):
+    """Raised when pipeline code or image fails quality gate thresholds."""
+
+    def __init__(self, message, quality_gate=None, findings=None):
+        super().__init__(message)
+        self.message = message
+        self.quality_gate = quality_gate or {}
+        self.findings = findings or []
+
+
 # ============================================================
 # BLUEPRINT
 # ============================================================
@@ -3051,11 +3061,13 @@ def run_pipeline(pipeline_id):
                 ),
             )
 
-            raise RuntimeError(
+            raise QualityGateError(
                 "Quality gate failed: "
                 + "; ".join(
                     quality_gate["reasons"]
-                )
+                ),
+                quality_gate=quality_gate,
+                findings=all_findings,
             )
 
         execution_mode = get_pipeline_execution_mode()
@@ -3508,6 +3520,75 @@ def run_pipeline(pipeline_id):
                 ],
             }
         ), 201
+
+    except QualityGateError as qg_err:
+
+        failed_at = utc_now()
+        error_message = str(qg_err)
+        qg = qg_err.quality_gate
+
+        run["status"] = "failed"
+        run["completed_at"] = failed_at
+        run["error"] = error_message
+        run["quality_gate"] = qg
+
+        pipeline["status"] = "failed"
+        pipeline["updated_at"] = failed_at
+        pipeline["last_error"] = error_message
+        pipeline["last_security_score"] = qg.get("security_score")
+
+        logger.warning(
+            "[PIPELINE-RUN] Pipeline run %s blocked by quality gate: %s",
+            run.get("id"),
+            error_message,
+        )
+
+        if run.get("deployment_id"):
+            try:
+                update_deployment(
+                    run["deployment_id"],
+                    status="failed",
+                    health_status="failed",
+                    error_message=f"Quality gate rejected deployment: {error_message}",
+                    completed_at=failed_at,
+                )
+                logger.info(
+                    "[PIPELINE-RUN] Updated deployment %s to failed following quality gate rejection.",
+                    run["deployment_id"],
+                )
+            except Exception as e:
+                logger.error(
+                    "[PIPELINE-RUN] Failed to update deployment %s to failed: %s",
+                    run["deployment_id"],
+                    e,
+                )
+
+        if scan is not None:
+            pipeline["last_scan_id"] = scan["id"]
+            pipeline["last_scan_status"] = "completed"
+
+        pipeline["stages"] = run["stages"]
+
+        save_pipeline_run(run)
+        save_pipeline(pipeline)
+
+        return jsonify(
+            {
+                "success": False,
+                "error": "QUALITY_GATE_FAILED",
+                "message": error_message,
+                "security_score": qg.get("security_score", 0),
+                "required_score": qg.get("minimum_score", 70),
+                "critical_findings_count": qg.get("critical", 0),
+                "high_findings_count": qg.get("high", 0),
+                "reasons": qg.get("reasons", []),
+                "quality_gate": qg,
+                "findings": qg_err.findings,
+                "pipeline": pipeline,
+                "run": run,
+                "scan_id": scan["id"] if scan else None,
+            }
+        ), 422
 
     except Exception as error:
 

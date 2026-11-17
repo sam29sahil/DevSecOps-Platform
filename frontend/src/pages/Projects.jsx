@@ -215,7 +215,21 @@ function Projects() {
       await loadProjects();
     } catch (err) {
       console.error("Project deployment trigger error:", err);
-      setError(err.message || "Failed to trigger deployment.");
+      if (err.data?.error === "QUALITY_GATE_FAILED" || err.status === 422) {
+        const qg = err.data?.quality_gate;
+        const score = err.data?.security_score ?? qg?.security_score ?? "N/A";
+        const required = err.data?.required_score ?? qg?.minimum_score ?? 70;
+        const crit = err.data?.critical_findings_count ?? qg?.critical ?? 0;
+        const high = err.data?.high_findings_count ?? qg?.high ?? 0;
+        const reasons = (err.data?.reasons && err.data.reasons.length > 0)
+          ? err.data.reasons.join(" ")
+          : (err.message || "Security score below policy requirements.");
+        setError(
+          `🛡️ Quality Gate Rejected: ${reasons} (Score: ${score}/${required}, Critical: ${crit}, High: ${high}). Deployment blocked to protect production.`
+        );
+      } else {
+        setError(err.message || "Failed to trigger deployment.");
+      }
     } finally {
       setDeployingId(null);
     }

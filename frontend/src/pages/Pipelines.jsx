@@ -547,10 +547,24 @@ export default function Pipelines() {
         err
       );
 
-      setError(
-        err.message ||
-          "Pipeline execution failed."
-      );
+      if (err.data?.error === "QUALITY_GATE_FAILED" || err.status === 422) {
+        const qg = err.data?.quality_gate;
+        const score = err.data?.security_score ?? qg?.security_score ?? "N/A";
+        const required = err.data?.required_score ?? qg?.minimum_score ?? 70;
+        const crit = err.data?.critical_findings_count ?? qg?.critical ?? 0;
+        const high = err.data?.high_findings_count ?? qg?.high ?? 0;
+        const reasons = (err.data?.reasons && err.data.reasons.length > 0)
+          ? err.data.reasons.join(" ")
+          : (err.message || "Security score below policy requirements.");
+        setError(
+          `🛡️ Quality Gate Rejected: ${reasons} (Score: ${score}/${required}, Critical: ${crit}, High: ${high}). Pipeline stopped.`
+        );
+      } else {
+        setError(
+          err.message ||
+            "Pipeline execution failed."
+        );
+      }
 
       setPipelines((previous) =>
         previous.map((item) =>
@@ -558,10 +572,19 @@ export default function Pipelines() {
             ? {
                 ...item,
                 status: STATUS.FAILED,
+                last_error: err.message,
               }
             : item
         )
       );
+
+      await loadPipelines();
+      if (
+        selectedPipeline?.id ===
+        pipeline.id
+      ) {
+        await loadRuns(pipeline.id);
+      }
     } finally {
       setRunningId(null);
     }
