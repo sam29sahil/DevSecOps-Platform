@@ -196,6 +196,8 @@ def init_db():
         db.execute("ALTER TABLE projects ADD COLUMN app_port INTEGER DEFAULT 5000")
     if "app_type" not in project_columns:
         db.execute("ALTER TABLE projects ADD COLUMN app_type TEXT DEFAULT 'web'")
+    if "user_id" not in project_columns:
+        db.execute("ALTER TABLE projects ADD COLUMN user_id TEXT DEFAULT 'default_user'")
 
     # ========================================================
     # DEPLOYMENTS
@@ -224,6 +226,7 @@ def init_db():
             health_status TEXT DEFAULT 'unknown',
             app_url TEXT,
             error_message TEXT,
+            user_id TEXT DEFAULT 'default_user',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             completed_at TEXT,
@@ -235,6 +238,10 @@ def init_db():
                 ON DELETE SET NULL
         )
     """)
+
+    dep_cols = {row["name"] for row in db.execute("PRAGMA table_info(deployments)").fetchall()}
+    if "user_id" not in dep_cols:
+        db.execute("ALTER TABLE deployments ADD COLUMN user_id TEXT DEFAULT 'default_user'")
 
     # ========================================================
     # NOTIFICATIONS
@@ -251,12 +258,17 @@ def init_db():
             event_type TEXT NOT NULL,
             status TEXT DEFAULT 'info',
             read INTEGER DEFAULT 0,
+            user_id TEXT DEFAULT 'default_user',
             created_at TEXT NOT NULL,
             FOREIGN KEY (project_id)
                 REFERENCES projects(id)
                 ON DELETE CASCADE
         )
     """)
+
+    notif_cols = {row["name"] for row in db.execute("PRAGMA table_info(notifications)").fetchall()}
+    if "user_id" not in notif_cols:
+        db.execute("ALTER TABLE notifications ADD COLUMN user_id TEXT DEFAULT 'default_user'")
 
     db.commit()
     db.close()
@@ -1036,6 +1048,8 @@ def create_notification(
     project_id=None,
     deployment_id=None,
     pipeline_run_id=None,
+    user_id="default_user",
+    **kwargs,
 ):
     """Store a persistent deployment or pipeline event notification."""
     db = get_db()
@@ -1051,10 +1065,11 @@ def create_notification(
             message,
             event_type,
             status,
+            user_id,
             read,
             created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
         """,
         (
             project_id,
@@ -1064,6 +1079,7 @@ def create_notification(
             message,
             event_type,
             status,
+            user_id or "default_user",
             now,
         ),
     )

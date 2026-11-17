@@ -9,11 +9,14 @@ const API_BASE_URL =
 async function request(endpoint, options = {}) {
   const url = `${API_BASE_URL}${endpoint}`;
 
+  const apiKey = (typeof localStorage !== "undefined" && localStorage.getItem("apiKey")) || import.meta.env.VITE_API_KEY;
+
   try {
     const response = await fetch(url, {
       ...options,
       headers: {
         "Content-Type": "application/json",
+        ...(apiKey ? { "X-API-Key": apiKey } : {}),
         ...(options.headers || {}),
       },
     });
@@ -292,6 +295,22 @@ export async function getAwsEcr() {
 
 export async function getAwsImages() {
   return request("/aws/images");
+}
+
+export async function getDockerImages() {
+  return request("/containers/images");
+}
+
+export async function getAwsOverview() {
+  return request("/aws/overview");
+}
+
+export async function getAwsEcs() {
+  return request("/aws/ecs");
+}
+
+export async function getAwsCloudWatch() {
+  return request("/aws/cloudwatch");
 }
 /* =========================================================
    CLOUD

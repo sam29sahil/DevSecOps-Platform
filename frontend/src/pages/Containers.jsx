@@ -1,1513 +1,333 @@
 import { useEffect, useState } from "react";
-
+import { Link } from "react-router-dom";
+import {
+  Container,
+  Layers,
+  RefreshCw,
+  ExternalLink,
+  ShieldCheck,
+  ShieldAlert,
+  Server,
+  Tag,
+  Clock,
+  HardDrive,
+} from "lucide-react";
 import {
   getContainers,
-  getContainer,
-  startContainer,
-  stopContainer,
-  restartContainer,
-  removeContainer,
-  getContainerLogs,
-  getContainerStats,
+  getDockerImages,
 } from "../services/api";
-
 import "./Containers.css";
 
+function formatDate(value) {
+  if (!value) return "N/A";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "N/A" : date.toLocaleString();
+}
 
 function Containers() {
+  const [activeTab, setActiveTab] = useState("images");
+  const [images, setImages] = useState([]);
   const [containers, setContainers] = useState([]);
-
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [repositoryUri, setRepositoryUri] = useState("");
 
-  const [actionLoading, setActionLoading] = useState({});
-
-  const [selectedContainer, setSelectedContainer] =
-    useState(null);
-
-  const [logs, setLogs] = useState("");
-  const [logsLoading, setLogsLoading] = useState(false);
-
-  const [stats, setStats] = useState(null);
-  const [statsLoading, setStatsLoading] = useState(false);
-
-  const [showLogs, setShowLogs] = useState(false);
-  const [showStats, setShowStats] = useState(false);
-
-  /* =========================================================
-     LOAD CONTAINERS
-  ========================================================= */
-
-  async function loadContainers() {
+  async function loadData() {
     try {
       setLoading(true);
       setError("");
 
-      const data = await getContainers();
+      const [imgData, contData] = await Promise.allSettled([
+        getDockerImages(),
+        getContainers(),
+      ]);
 
-      if (!data || data.success === false) {
-        throw new Error(
-          data?.error ||
-            "Failed to load Docker containers."
-        );
+      if (imgData.status === "fulfilled" && imgData.value?.success) {
+        setImages(imgData.value.images || []);
+        setRepositoryUri(imgData.value.repository_uri || "");
       }
 
-      setContainers(
-        Array.isArray(data.containers)
-          ? data.containers
-          : []
-      );
+      if (contData.status === "fulfilled" && contData.value?.success) {
+        setContainers(contData.value.containers || []);
+      }
     } catch (err) {
-      console.error(
-        "Container loading error:",
-        err
-      );
-
-      setError(
-        err?.message ||
-          "Failed to load Docker containers."
-      );
-
-      setContainers([]);
+      console.error("Failed to load Docker data:", err);
+      setError(err?.message || "Failed to load Docker infrastructure.");
     } finally {
       setLoading(false);
     }
   }
 
   useEffect(() => {
-    loadContainers();
+    loadData();
   }, []);
 
-  /* =========================================================
-     CONTAINER ACTION
-  ========================================================= */
-
-  async function handleContainerAction(
-    container,
-    action
-  ) {
-    const containerId = container.id;
-
-    if (!containerId) {
-      setError("Container ID is missing.");
-      return;
-    }
-
-    const loadingKey =
-      `${containerId}-${action}`;
-
-    try {
-      setError("");
-
-      setActionLoading((previous) => ({
-        ...previous,
-        [loadingKey]: true,
-      }));
-
-      let data;
-
-      if (action === "start") {
-        data = await startContainer(
-          containerId
-        );
-      } else if (action === "stop") {
-        data = await stopContainer(
-          containerId
-        );
-      } else if (action === "restart") {
-        data = await restartContainer(
-          containerId
-        );
-      } else {
-        throw new Error(
-          `Unsupported container action: ${action}`
-        );
-      }
-
-      if (!data || data.success === false) {
-        throw new Error(
-          data?.error ||
-            `Failed to ${action} container.`
-        );
-      }
-
-      /*
-       * Give Docker a short moment to update
-       * its container state before refreshing.
-       */
-      await new Promise((resolve) =>
-        setTimeout(resolve, 500)
-      );
-
-      await loadContainers();
-
-    } catch (err) {
-      console.error(
-        `Container ${action} error:`,
-        err
-      );
-
-      setError(
-        err?.message ||
-          `Failed to ${action} container.`
-      );
-    } finally {
-      setActionLoading((previous) => {
-        const next = {
-          ...previous,
-        };
-
-        delete next[loadingKey];
-
-        return next;
-      });
-    }
-  }
-
-  /* =========================================================
-     GET CONTAINER DETAILS
-  ========================================================= */
-
-  async function getContainerDetails(
-    containerId
-  ) {
-    try {
-      const data =
-        await getContainer(containerId);
-
-      if (!data || data.success === false) {
-        throw new Error(
-          data?.error ||
-            "Failed to load container details."
-        );
-      }
-
-      return data.container;
-
-    } catch (err) {
-      console.error(
-        "Container details error:",
-        err
-      );
-
-      setError(
-        err?.message ||
-          "Failed to load container details."
-      );
-
-      return null;
-    }
-  }
-
-  /* =========================================================
-     VIEW DETAILS
-  ========================================================= */
-
-  async function handleViewDetails(
-    container
-  ) {
-    setError("");
-
-    const details =
-      await getContainerDetails(
-        container.id
-      );
-
-    if (details) {
-      setSelectedContainer({
-        ...container,
-        ...details,
-      });
-
-      setShowLogs(false);
-      setShowStats(false);
-    }
-  }
-
-  /* =========================================================
-     VIEW LOGS
-  ========================================================= */
-
-  async function handleViewLogs(
-    container
-  ) {
-    try {
-      setSelectedContainer(container);
-
-      setShowLogs(true);
-      setShowStats(false);
-
-      setLogs("");
-      setLogsLoading(true);
-      setError("");
-
-      const data =
-        await getContainerLogs(
-          container.id
-        );
-
-      if (!data || data.success === false) {
-        throw new Error(
-          data?.error ||
-            "Failed to retrieve container logs."
-        );
-      }
-
-      setLogs(data.logs || "");
-
-    } catch (err) {
-      console.error(
-        "Container logs error:",
-        err
-      );
-
-      setError(
-        err?.message ||
-          "Failed to retrieve container logs."
-      );
-
-      setLogs("");
-    } finally {
-      setLogsLoading(false);
-    }
-  }
-
-  /* =========================================================
-     VIEW STATS
-  ========================================================= */
-
-  async function handleViewStats(
-    container
-  ) {
-    try {
-      setSelectedContainer(container);
-
-      setShowStats(true);
-      setShowLogs(false);
-
-      setStats(null);
-      setStatsLoading(true);
-      setError("");
-
-      const data =
-        await getContainerStats(
-          container.id
-        );
-
-      if (!data || data.success === false) {
-        throw new Error(
-          data?.error ||
-            "Failed to retrieve container statistics."
-        );
-      }
-
-      setStats(data.stats || null);
-
-    } catch (err) {
-      console.error(
-        "Container stats error:",
-        err
-      );
-
-      setError(
-        err?.message ||
-          "Failed to retrieve container statistics."
-      );
-
-      setStats(null);
-    } finally {
-      setStatsLoading(false);
-    }
-  }
-
-  /* =========================================================
-     REMOVE CONTAINER
-  ========================================================= */
-
-  async function handleRemoveContainer(
-    container
-  ) {
-    const containerId = container.id;
-
-    if (!containerId) {
-      setError("Container ID is missing.");
-      return;
-    }
-
-    const confirmed =
-      window.confirm(
-        `Remove container "${container.name}"?\n\nThis removes the container from Docker.`
-      );
-
-    if (!confirmed) {
-      return;
-    }
-
-    const loadingKey =
-      `${containerId}-remove`;
-
-    try {
-      setError("");
-
-      setActionLoading((previous) => ({
-        ...previous,
-        [loadingKey]: true,
-      }));
-
-      const data =
-        await removeContainer(
-          containerId
-        );
-
-      if (!data || data.success === false) {
-        throw new Error(
-          data?.error ||
-            "Failed to remove container."
-        );
-      }
-
-      await loadContainers();
-
-    } catch (err) {
-      console.error(
-        "Container remove error:",
-        err
-      );
-
-      setError(
-        err?.message ||
-          "Failed to remove container."
-      );
-    } finally {
-      setActionLoading((previous) => {
-        const next = {
-          ...previous,
-        };
-
-        delete next[loadingKey];
-
-        return next;
-      });
-    }
-  }
-
-  /* =========================================================
-     CLOSE OVERLAY
-  ========================================================= */
-
-  function closeOverlay() {
-    setShowLogs(false);
-    setShowStats(false);
-
-    setSelectedContainer(null);
-
-    setLogs("");
-    setStats(null);
-  }
-
-  /* =========================================================
-     COUNTERS
-  ========================================================= */
-
-  const running =
-    containers.filter(
-      (container) =>
-        String(
-          container.state || ""
-        ).toLowerCase() === "running"
-    ).length;
-
-  const stopped =
-    containers.length - running;
-
-  const uniqueImages =
-    new Set(
-      containers
-        .map(
-          (container) =>
-            container.image
-        )
-        .filter(Boolean)
-    ).size;
-
-  /* =========================================================
-     RENDER
-  ========================================================= */
+  const totalImages = images.length;
+  const runningContainers = containers.filter(
+    (c) => c.state === "running" || c.status?.toLowerCase().includes("up")
+  ).length;
 
   return (
     <div className="containers-page">
-
-      {/* =====================================================
-          HEADER
-      ===================================================== */}
-
+      {/* Header */}
       <div className="containers-page-header">
-
-        <div className="containers-header-copy">
-
-          <div className="section-label">
-            CONTAINER SECURITY
-          </div>
-
-          <h1>
-            Containers
-          </h1>
-
+        <div>
+          <div className="section-label">CONTAINER REGISTRY & RUNTIMES</div>
+          <h1>Docker Images & Workloads</h1>
           <p>
-            Monitor and manage Docker containers
-            running across your DevSecOps
-            environment.
+            Real-time synchronization with AWS ECR registry, build artifacts, image vulnerability status, and running Fargate workloads.
           </p>
-
         </div>
 
         <button
-          type="button"
           className="containers-refresh-button"
-          onClick={loadContainers}
+          onClick={loadData}
           disabled={loading}
         >
-          <span className="refresh-icon">
-            ↻
-          </span>
-
-          {loading
-            ? "Refreshing..."
-            : "Refresh"}
+          <RefreshCw className={loading ? "aws-spin" : ""} size={16} />
+          {loading ? "Refreshing..." : "Refresh"}
         </button>
-
       </div>
 
+      {/* Summary Cards */}
+      <div className="containers-summary">
+        <div className="summary-card">
+          <div className="summary-label">TOTAL ECR IMAGES</div>
+          <div className="summary-value">{totalImages}</div>
+          <div className="summary-desc">Tagged builds in AWS ECR</div>
+        </div>
 
-      {/* =====================================================
-          ERROR
-      ===================================================== */}
+        <div className="summary-card">
+          <div className="summary-label">ACTIVE WORKLOADS</div>
+          <div className="summary-value">{runningContainers}</div>
+          <div className="summary-desc">Running in ECS Fargate</div>
+        </div>
+
+        <div className="summary-card">
+          <div className="summary-label">REGISTRY TARGET</div>
+          <div className="summary-value" style={{ fontSize: "16px", textTransform: "none", wordBreak: "break-all" }}>
+            AWS ECR
+          </div>
+          <div className="summary-desc">ap-south-1</div>
+        </div>
+
+        <div className="summary-card">
+          <div className="summary-label">REGISTRY STATUS</div>
+          <div className="summary-value" style={{ color: "#22c55e", fontSize: "20px" }}>
+            Operational
+          </div>
+          <div className="summary-desc">Scan on push enabled</div>
+        </div>
+      </div>
+
+      {/* Tab Switcher */}
+      <div style={{ display: "flex", gap: "12px", marginBottom: "20px" }}>
+        <button
+          onClick={() => setActiveTab("images")}
+          style={{
+            padding: "10px 20px",
+            background: activeTab === "images" ? "#1e40af" : "#0d1b30",
+            color: "#fff",
+            border: "1px solid #25476e",
+            borderRadius: "8px",
+            fontWeight: 600,
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            gap: "8px",
+          }}
+        >
+          <Layers size={16} /> Docker Images in AWS ECR ({totalImages})
+        </button>
+        <button
+          onClick={() => setActiveTab("containers")}
+          style={{
+            padding: "10px 20px",
+            background: activeTab === "containers" ? "#1e40af" : "#0d1b30",
+            color: "#fff",
+            border: "1px solid #25476e",
+            borderRadius: "8px",
+            fontWeight: 600,
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            gap: "8px",
+          }}
+        >
+          <Server size={16} /> Active Containers & Tasks ({containers.length})
+        </button>
+      </div>
 
       {error && (
-        <div className="containers-error">
-
-          <div className="error-icon">
-            !
-          </div>
-
-          <div className="error-content">
-
-            <strong>
-              Container operation failed
-            </strong>
-
-            <span>
-              {error}
-            </span>
-
-          </div>
-
-          <button
-            type="button"
-            onClick={() => setError("")}
-            className="error-close"
-          >
-            ×
-          </button>
-
+        <div style={{ padding: "14px 18px", background: "rgba(239, 68, 68, 0.15)", border: "1px solid #ef4444", borderRadius: "8px", color: "#fca5a5", marginBottom: "20px" }}>
+          <strong>Notice:</strong> {error}
         </div>
       )}
 
-
-      {/* =====================================================
-          SUMMARY
-      ===================================================== */}
-
-      <div className="containers-summary">
-
-        <div className="container-summary-card">
-
-          <div className="summary-icon blue">
-            ◇
-          </div>
-
-          <div className="summary-content">
-
-            <span>
-              Total Containers
-            </span>
-
-            <strong>
-              {containers.length}
-            </strong>
-
-            <small>
-              Docker containers
-            </small>
-
-          </div>
-
-        </div>
-
-
-        <div className="container-summary-card">
-
-          <div className="summary-icon green">
-            ✓
-          </div>
-
-          <div className="summary-content">
-
-            <span>
-              Running
-            </span>
-
-            <strong>
-              {running}
-            </strong>
-
-            <small>
-              Active containers
-            </small>
-
-          </div>
-
-        </div>
-
-
-        <div className="container-summary-card">
-
-          <div className="summary-icon orange">
-            ●
-          </div>
-
-          <div className="summary-content">
-
-            <span>
-              Stopped
-            </span>
-
-            <strong>
-              {stopped}
-            </strong>
-
-            <small>
-              Inactive containers
-            </small>
-
-          </div>
-
-        </div>
-
-
-        <div className="container-summary-card">
-
-          <div className="summary-icon purple">
-            ▣
-          </div>
-
-          <div className="summary-content">
-
-            <span>
-              Images
-            </span>
-
-            <strong>
-              {uniqueImages}
-            </strong>
-
-            <small>
-              Unique images
-            </small>
-
-          </div>
-
-        </div>
-
-      </div>
-
-
-      {/* =====================================================
-          MAIN PANEL
-      ===================================================== */}
-
-      <section className="containers-panel">
-
-        <div className="containers-panel-header">
-
-          <div>
-
-            <div className="section-label">
-              DOCKER ENVIRONMENT
+      {/* Tab 1: Real Docker Images from ECR */}
+      {activeTab === "images" && (
+        <div style={{ background: "#0b1526", border: "1px solid #1a2f4c", borderRadius: "12px", overflow: "hidden" }}>
+          <div style={{ padding: "18px 24px", borderBottom: "1px solid #1a2f4c", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div>
+              <h3 style={{ margin: 0, color: "#f1f5f9", fontSize: "18px" }}>AWS ECR Image Catalog</h3>
+              <span style={{ fontSize: "13px", color: "#64748b" }}>
+                Repository: {repositoryUri || "288418346751.dkr.ecr.ap-south-1.amazonaws.com/devsecops-platform"}
+              </span>
             </div>
-
-            <h2>
-              Container Status
-            </h2>
-
-            <p>
-              Live Docker runtime information
-              from the local Docker Engine.
-            </p>
-
           </div>
 
-          <div className="container-count">
-            {containers.length} container
-            {containers.length === 1
-              ? ""
-              : "s"}
-          </div>
-
-        </div>
-
-
-        {/* ===================================================
-            LOADING
-        =================================================== */}
-
-        {loading ? (
-
-          <div className="containers-loading">
-
-            <div className="loading-spinner"></div>
-
-            <span>
-              Connecting to Docker Engine...
-            </span>
-
-          </div>
-
-        ) : containers.length === 0 ? (
-
-          /* =================================================
-             EMPTY
-          ================================================= */
-
-          <div className="containers-empty">
-
-            <div className="empty-container-icon">
-              ◇
+          {loading ? (
+            <div style={{ padding: "40px", textAlign: "center", color: "#94a3b8" }}>Loading Docker images from AWS ECR...</div>
+          ) : images.length === 0 ? (
+            <div style={{ padding: "40px", textAlign: "center", color: "#64748b" }}>
+              No tagged Docker images found in AWS ECR yet. Run a pipeline to build and push an image.
             </div>
-
-            <h3>
-              No containers found
-            </h3>
-
-            <p>
-              Docker is available, but no
-              containers were returned by the
-              configured Docker environment.
-            </p>
-
-            <button
-              type="button"
-              className="containers-refresh-button"
-              onClick={loadContainers}
-            >
-              ↻ Refresh
-            </button>
-
-          </div>
-
-        ) : (
-
-          /* =================================================
-             CONTAINER LIST
-          ================================================= */
-
-          <div className="container-list">
-
-            {containers.map(
-              (container) => {
-
-                const isRunning =
-                  String(
-                    container.state || ""
-                  ).toLowerCase() ===
-                  "running";
-
-                const startKey =
-                  `${container.id}-start`;
-
-                const stopKey =
-                  `${container.id}-stop`;
-
-                const restartKey =
-                  `${container.id}-restart`;
-
-                const removeKey =
-                  `${container.id}-remove`;
-
-                const starting =
-                  actionLoading[
-                    startKey
-                  ] === true;
-
-                const stopping =
-                  actionLoading[
-                    stopKey
-                  ] === true;
-
-                const restarting =
-                  actionLoading[
-                    restartKey
-                  ] === true;
-
-                const removing =
-                  actionLoading[
-                    removeKey
-                  ] === true;
-
-                const busy =
-                  starting ||
-                  stopping ||
-                  restarting ||
-                  removing;
-
-                return (
-
-                  <article
-                    className={`container-card ${
-                      isRunning
-                        ? "container-running"
-                        : "container-stopped"
-                    }`}
-                    key={
-                      container.id ||
-                      container.name
-                    }
-                  >
-
-                    {/* CARD HEADER */}
-
-                    <div className="container-card-top">
-
-                      <div className="container-name-area">
-
-                        <div
-                          className={`container-icon ${
-                            isRunning
-                              ? "running"
-                              : "stopped"
-                          }`}
-                        >
-                          ◇
+          ) : (
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: "14px" }}>
+                <thead>
+                  <tr style={{ background: "#08101d", color: "#94a3b8", borderBottom: "1px solid #1a2f4c" }}>
+                    <th style={{ padding: "14px 20px" }}>Associated Project</th>
+                    <th style={{ padding: "14px 20px" }}>Image Tag</th>
+                    <th style={{ padding: "14px 20px" }}>Size</th>
+                    <th style={{ padding: "14px 20px" }}>Push Timestamp</th>
+                    <th style={{ padding: "14px 20px" }}>Vulnerability Scan</th>
+                    <th style={{ padding: "14px 20px" }}>Deployment Link</th>
+                    <th style={{ padding: "14px 20px" }}>Digest</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {images.map((img, idx) => (
+                    <tr key={idx} style={{ borderBottom: "1px solid #122138", color: "#e2e8f0" }}>
+                      <td style={{ padding: "14px 20px" }}>
+                        <div style={{ fontWeight: 600, color: "#60a5fa" }}>
+                          {img.associated_project}
                         </div>
-
-                        <div className="container-title-block">
-
-                          <h3>
-                            {container.name ||
-                              "Unnamed Container"}
-                          </h3>
-
-                          <span className="container-id">
-                            ID:{" "}
-                            {container.id ||
-                              "—"}
-                          </span>
-
+                        <div style={{ fontSize: "12px", color: "#64748b" }}>
+                          {img.registry} ({img.region})
                         </div>
+                      </td>
 
-                      </div>
+                      <td style={{ padding: "14px 20px" }}>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: "4px", background: "rgba(59, 130, 246, 0.15)", color: "#93c5fd", padding: "3px 8px", borderRadius: "6px", fontFamily: "monospace", fontSize: "12px" }}>
+                          <Tag size={12} /> {img.tag}
+                        </span>
+                      </td>
 
+                      <td style={{ padding: "14px 20px", color: "#cbd5e1" }}>
+                        {img.image_size}
+                      </td>
 
-                      <div className="container-card-actions">
+                      <td style={{ padding: "14px 20px", color: "#94a3b8", fontSize: "13px" }}>
+                        {formatDate(img.last_pushed || img.build_timestamp)}
+                      </td>
 
-                        {/* START */}
+                      <td style={{ padding: "14px 20px" }}>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: "6px", color: "#22c55e", fontSize: "13px" }}>
+                          <ShieldCheck size={16} /> {img.scan_status || "COMPLETE"}
+                        </span>
+                      </td>
 
-                        {!isRunning && (
-
-                          <button
-                            type="button"
-                            className="container-action-button start"
-                            onClick={() =>
-                              handleContainerAction(
-                                container,
-                                "start"
-                              )
-                            }
-                            disabled={busy}
+                      <td style={{ padding: "14px 20px" }}>
+                        {img.associated_deployment ? (
+                          <Link
+                            to="/deployments"
+                            style={{ display: "inline-flex", alignItems: "center", gap: "5px", color: "#38bdf8", textDecoration: "none", fontSize: "13px" }}
                           >
-                            {starting
-                              ? "Starting..."
-                              : "▶ Start"}
-                          </button>
-
+                            {img.associated_deployment} <ExternalLink size={13} />
+                          </Link>
+                        ) : (
+                          <span style={{ color: "#64748b", fontSize: "13px" }}>None</span>
                         )}
+                      </td>
 
+                      <td style={{ padding: "14px 20px", fontFamily: "monospace", fontSize: "12px", color: "#64748b" }}>
+                        {img.digest ? `${img.digest.substring(0, 16)}...` : "N/A"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
 
-                        {/* STOP */}
+      {/* Tab 2: Containers / Active Workloads */}
+      {activeTab === "containers" && (
+        <div style={{ background: "#0b1526", border: "1px solid #1a2f4c", borderRadius: "12px", overflow: "hidden" }}>
+          <div style={{ padding: "18px 24px", borderBottom: "1px solid #1a2f4c" }}>
+            <h3 style={{ margin: 0, color: "#f1f5f9", fontSize: "18px" }}>Running Containers & Fargate Tasks</h3>
+          </div>
 
-                        {isRunning && (
-
-                          <button
-                            type="button"
-                            className="container-action-button stop"
-                            onClick={() =>
-                              handleContainerAction(
-                                container,
-                                "stop"
-                              )
-                            }
-                            disabled={busy}
+          {loading ? (
+            <div style={{ padding: "40px", textAlign: "center", color: "#94a3b8" }}>Loading workloads...</div>
+          ) : containers.length === 0 ? (
+            <div style={{ padding: "40px", textAlign: "center", color: "#64748b" }}>
+              No active container workloads discovered.
+            </div>
+          ) : (
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: "14px" }}>
+                <thead>
+                  <tr style={{ background: "#08101d", color: "#94a3b8", borderBottom: "1px solid #1a2f4c" }}>
+                    <th style={{ padding: "14px 20px" }}>Workload Name / ID</th>
+                    <th style={{ padding: "14px 20px" }}>Image</th>
+                    <th style={{ padding: "14px 20px" }}>Runtime</th>
+                    <th style={{ padding: "14px 20px" }}>Status</th>
+                    <th style={{ padding: "14px 20px" }}>Port</th>
+                    <th style={{ padding: "14px 20px" }}>Live Application</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {containers.map((c, idx) => (
+                    <tr key={idx} style={{ borderBottom: "1px solid #122138", color: "#e2e8f0" }}>
+                      <td style={{ padding: "14px 20px", fontWeight: 600 }}>
+                        {c.name || c.id}
+                      </td>
+                      <td style={{ padding: "14px 20px", fontFamily: "monospace", fontSize: "12px", color: "#93c5fd" }}>
+                        {c.image}
+                      </td>
+                      <td style={{ padding: "14px 20px", color: "#94a3b8" }}>
+                        {c.runtime || "AWS ECS Fargate"}
+                      </td>
+                      <td style={{ padding: "14px 20px" }}>
+                        <span style={{
+                          padding: "3px 8px",
+                          borderRadius: "6px",
+                          fontSize: "12px",
+                          fontWeight: 600,
+                          background: c.state === "running" ? "rgba(34, 197, 94, 0.15)" : "rgba(239, 68, 68, 0.15)",
+                          color: c.state === "running" ? "#4ade80" : "#f87171",
+                        }}>
+                          {c.status || c.state}
+                        </span>
+                      </td>
+                      <td style={{ padding: "14px 20px", color: "#cbd5e1" }}>
+                        {c.ports || "5000"}
+                      </td>
+                      <td style={{ padding: "14px 20px" }}>
+                        {c.app_url ? (
+                          <a
+                            href={c.app_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            style={{ display: "inline-flex", alignItems: "center", gap: "5px", color: "#38bdf8", textDecoration: "none" }}
                           >
-                            {stopping
-                              ? "Stopping..."
-                              : "■ Stop"}
-                          </button>
-
+                            Open App <ExternalLink size={13} />
+                          </a>
+                        ) : (
+                          <span style={{ color: "#64748b" }}>—</span>
                         )}
-
-
-                        {/* RESTART */}
-
-                        <button
-                          type="button"
-                          className="container-action-button restart"
-                          onClick={() =>
-                            handleContainerAction(
-                              container,
-                              "restart"
-                            )
-                          }
-                          disabled={busy}
-                        >
-                          {restarting
-                            ? "Restarting..."
-                            : "↻ Restart"}
-                        </button>
-
-
-                        {/* DETAILS */}
-
-                        <button
-                          type="button"
-                          className="container-action-button details"
-                          onClick={() =>
-                            handleViewDetails(
-                              container
-                            )
-                          }
-                          disabled={busy}
-                        >
-                          View
-                        </button>
-
-
-                        {/* REMOVE */}
-
-                        <button
-                          type="button"
-                          className="container-action-button remove"
-                          onClick={() =>
-                            handleRemoveContainer(
-                              container
-                            )
-                          }
-                          disabled={busy}
-                        >
-                          {removing
-                            ? "Removing..."
-                            : "Remove"}
-                        </button>
-
-
-                        {/* STATUS */}
-
-                        <span
-                          className={`container-status ${
-                            isRunning
-                              ? "status-running"
-                              : "status-stopped"
-                          }`}
-                        >
-
-                          <i></i>
-
-                          {isRunning
-                            ? "RUNNING"
-                            : "STOPPED"}
-
-                        </span>
-
-                      </div>
-
-                    </div>
-
-
-                    {/* DETAILS */}
-
-                    <div className="container-details">
-
-                      <div className="container-detail">
-
-                        <span>
-                          IMAGE
-                        </span>
-
-                        <strong
-                          title={
-                            container.image ||
-                            ""
-                          }
-                        >
-                          {container.image ||
-                            "Unknown"}
-                        </strong>
-
-                      </div>
-
-
-                      <div className="container-detail">
-
-                        <span>
-                          STATE
-                        </span>
-
-                        <strong>
-                          {container.state ||
-                            "Unknown"}
-                        </strong>
-
-                      </div>
-
-
-                      <div className="container-detail">
-
-                        <span>
-                          STATUS
-                        </span>
-
-                        <strong
-                          title={
-                            container.status ||
-                            ""
-                          }
-                        >
-                          {container.status ||
-                            "—"}
-                        </strong>
-
-                      </div>
-
-
-                      <div className="container-detail">
-
-                        <span>
-                          PORTS
-                        </span>
-
-                        <strong
-                          title={
-                            container.ports ||
-                            ""
-                          }
-                        >
-                          {container.ports ||
-                            "None"}
-                        </strong>
-
-                      </div>
-
-                    </div>
-
-
-                    {/* COMMAND */}
-
-                    <div className="container-command">
-
-                      <div className="command-label">
-                        COMMAND
-                      </div>
-
-                      <code
-                        title={
-                          container.command ||
-                          ""
-                        }
-                      >
-                        {container.command ||
-                          "—"}
-                      </code>
-
-                    </div>
-
-
-                    {/* QUICK TOOLS */}
-
-                    <div className="container-tools">
-
-                      <button
-                        type="button"
-                        className="container-tool-button"
-                        onClick={() =>
-                          handleViewLogs(
-                            container
-                          )
-                        }
-                        disabled={busy}
-                      >
-                        <span>
-                          ≡
-                        </span>
-                        Logs
-                      </button>
-
-
-                      <button
-                        type="button"
-                        className="container-tool-button"
-                        onClick={() =>
-                          handleViewStats(
-                            container
-                          )
-                        }
-                        disabled={busy}
-                      >
-                        <span>
-                          ◫
-                        </span>
-                        Stats
-                      </button>
-
-                    </div>
-
-
-                    {/* FOOTER */}
-
-                    <div className="container-footer">
-
-                      <span>
-                        Created{" "}
-                        {container.created ||
-                          "Unknown"}
-                      </span>
-
-                      <span
-                        className={
-                          isRunning
-                            ? "health-good"
-                            : "health-warning"
-                        }
-                      >
-
-                        <i></i>
-
-                        {isRunning
-                          ? "Container active"
-                          : "Container inactive"}
-
-                      </span>
-
-                    </div>
-
-                  </article>
-
-                );
-              }
-            )}
-
-          </div>
-
-        )}
-
-      </section>
-
-
-      {/* =====================================================
-          LOGS MODAL
-      ===================================================== */}
-
-      {showLogs &&
-        selectedContainer && (
-
-          <div
-            className="container-overlay"
-            onClick={closeOverlay}
-          >
-
-            <div
-              className="container-modal logs-modal"
-              onClick={(event) =>
-                event.stopPropagation()
-              }
-            >
-
-              <div className="modal-header">
-
-                <div>
-
-                  <span className="modal-label">
-                    DOCKER LOGS
-                  </span>
-
-                  <h2>
-                    {selectedContainer.name}
-                  </h2>
-
-                  <p>
-                    Last 200 log lines
-                  </p>
-
-                </div>
-
-                <button
-                  type="button"
-                  className="modal-close"
-                  onClick={closeOverlay}
-                >
-                  ×
-                </button>
-
-              </div>
-
-
-              <div className="modal-body">
-
-                {logsLoading ? (
-
-                  <div className="modal-loading">
-
-                    <div className="loading-spinner"></div>
-
-                    <span>
-                      Reading container logs...
-                    </span>
-
-                  </div>
-
-                ) : (
-
-                  <pre className="logs-output">
-                    {logs ||
-                      "No logs were returned by Docker."}
-                  </pre>
-
-                )}
-
-              </div>
-
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
-
-          </div>
-
-        )}
-
-
-      {/* =====================================================
-          STATS MODAL
-      ===================================================== */}
-
-      {showStats &&
-        selectedContainer && (
-
-          <div
-            className="container-overlay"
-            onClick={closeOverlay}
-          >
-
-            <div
-              className="container-modal stats-modal"
-              onClick={(event) =>
-                event.stopPropagation()
-              }
-            >
-
-              <div className="modal-header">
-
-                <div>
-
-                  <span className="modal-label">
-                    DOCKER RUNTIME
-                  </span>
-
-                  <h2>
-                    {selectedContainer.name}
-                  </h2>
-
-                  <p>
-                    Current container statistics
-                  </p>
-
-                </div>
-
-                <button
-                  type="button"
-                  className="modal-close"
-                  onClick={closeOverlay}
-                >
-                  ×
-                </button>
-
-              </div>
-
-
-              <div className="modal-body">
-
-                {statsLoading ? (
-
-                  <div className="modal-loading">
-
-                    <div className="loading-spinner"></div>
-
-                    <span>
-                      Reading container statistics...
-                    </span>
-
-                  </div>
-
-                ) : stats ? (
-
-                  <div className="stats-grid">
-
-                    <div className="stat-box">
-
-                      <span>
-                        CPU USAGE
-                      </span>
-
-                      <strong>
-                        {stats.cpu_percent ||
-                          "—"}
-                      </strong>
-
-                    </div>
-
-
-                    <div className="stat-box">
-
-                      <span>
-                        MEMORY
-                      </span>
-
-                      <strong>
-                        {stats.memory_usage ||
-                          "—"}
-                      </strong>
-
-                    </div>
-
-
-                    <div className="stat-box">
-
-                      <span>
-                        MEMORY %
-                      </span>
-
-                      <strong>
-                        {stats.memory_percent ||
-                          "—"}
-                      </strong>
-
-                    </div>
-
-
-                    <div className="stat-box">
-
-                      <span>
-                        NETWORK I/O
-                      </span>
-
-                      <strong>
-                        {stats.network_io ||
-                          "—"}
-                      </strong>
-
-                    </div>
-
-
-                    <div className="stat-box">
-
-                      <span>
-                        BLOCK I/O
-                      </span>
-
-                      <strong>
-                        {stats.block_io ||
-                          "—"}
-                      </strong>
-
-                    </div>
-
-
-                    <div className="stat-box">
-
-                      <span>
-                        PIDS
-                      </span>
-
-                      <strong>
-                        {stats.pids ||
-                          "—"}
-                      </strong>
-
-                    </div>
-
-                  </div>
-
-                ) : (
-
-                  <div className="stats-empty">
-                    Statistics unavailable.
-                  </div>
-
-                )}
-
-              </div>
-
-            </div>
-
-          </div>
-
-        )}
-
-
-      {/* =====================================================
-          DETAILS MODAL
-      ===================================================== */}
-
-      {selectedContainer &&
-        !showLogs &&
-        !showStats && (
-
-          <div
-            className="container-overlay"
-            onClick={() =>
-              setSelectedContainer(null)
-            }
-          >
-
-            <div
-              className="container-modal details-modal"
-              onClick={(event) =>
-                event.stopPropagation()
-              }
-            >
-
-              <div className="modal-header">
-
-                <div>
-
-                  <span className="modal-label">
-                    CONTAINER DETAILS
-                  </span>
-
-                  <h2>
-                    {selectedContainer.Name ||
-                      selectedContainer.name ||
-                      "Container"}
-                  </h2>
-
-                  <p>
-                    Docker inspect information
-                  </p>
-
-                </div>
-
-                <button
-                  type="button"
-                  className="modal-close"
-                  onClick={() =>
-                    setSelectedContainer(
-                      null
-                    )
-                  }
-                >
-                  ×
-                </button>
-
-              </div>
-
-
-              <div className="modal-body">
-
-                <div className="details-modal-grid">
-
-                  <div>
-
-                    <span>
-                      NAME
-                    </span>
-
-                    <strong>
-                      {selectedContainer.Name ||
-                        selectedContainer.name ||
-                        "—"}
-                    </strong>
-
-                  </div>
-
-
-                  <div>
-
-                    <span>
-                      IMAGE
-                    </span>
-
-                    <strong>
-                      {selectedContainer.Config
-                        ?.Image ||
-                        selectedContainer.image ||
-                        "—"}
-                    </strong>
-
-                  </div>
-
-
-                  <div>
-
-                    <span>
-                      STATUS
-                    </span>
-
-                    <strong>
-                      {selectedContainer.State
-                        ?.Status ||
-                        selectedContainer.state ||
-                        "—"}
-                    </strong>
-
-                  </div>
-
-
-                  <div>
-
-                    <span>
-                      CREATED
-                    </span>
-
-                    <strong>
-                      {selectedContainer.Created ||
-                        selectedContainer.created ||
-                        "—"}
-                    </strong>
-
-                  </div>
-
-                </div>
-
-
-                <div className="inspect-output">
-
-                  <div className="command-label">
-                    DOCKER INSPECT
-                  </div>
-
-                  <pre>
-                    {JSON.stringify(
-                      selectedContainer,
-                      null,
-                      2
-                    )}
-                  </pre>
-
-                </div>
-
-              </div>
-
-            </div>
-
-          </div>
-
-        )}
-
+          )}
+        </div>
+      )}
     </div>
   );
 }

@@ -848,7 +848,28 @@ def is_git_available():
 
 
 def is_docker_available():
-    return shutil.which("docker") is not None
+    if shutil.which("docker") is None:
+        return False
+    try:
+        res = subprocess.run(
+            ["docker", "info"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+        return res.returncode == 0
+    except Exception:
+        return False
+
+
+def get_pipeline_execution_mode():
+    mode = os.getenv("PIPELINE_EXECUTION_MODE")
+    if mode:
+        return mode.strip().lower()
+    if os.getenv("RENDER") or os.getenv("IS_RENDER") or os.getenv("RENDER_SERVICE_ID"):
+        return "hosted"
+    return "local"
 
 
 def is_trivy_available():
@@ -1982,7 +2003,7 @@ def run_pipeline(pipeline_id):
             }
         ), 400
 
-    execution_mode = os.getenv("PIPELINE_EXECUTION_MODE", "local").strip().lower()
+    execution_mode = get_pipeline_execution_mode()
     if execution_mode == "hosted":
         if not os.getenv("GITHUB_TOKEN"):
             error_msg = "GitHub Actions integration is not configured."
@@ -2396,7 +2417,7 @@ def run_pipeline(pipeline_id):
                 )
             )
 
-        execution_mode = os.getenv("PIPELINE_EXECUTION_MODE", "local").strip().lower()
+        execution_mode = get_pipeline_execution_mode()
 
         if execution_mode == "hosted":
             # ====================================================

@@ -67,7 +67,7 @@ jobs:
       ECS_CLUSTER: devsecops-cluster
       OIDC_ROLE: arn:aws:iam::288418346751:role/DevSecOpsPlatform-GitHubActions
       CALLBACK_URL: ${{ inputs.callback_url }}
-      CALLBACK_SECRET: ${{ secrets.DEVSECOPS_CALLBACK_SECRET }}
+      CALLBACK_SECRET: ${{ secrets.DEVSECOPS_CALLBACK_SECRET || secrets.GITHUB_CALLBACK_SECRET }}
       RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
       RUN_ID: ${{ inputs.run_id }}
       PIPELINE_ID: ${{ inputs.pipeline_id }}
@@ -411,6 +411,9 @@ jobs:
 
           with open('/tmp/deploy_details.json', 'w') as f:
               json.dump(details_dict, f)
+
+          if not health_ok:
+              sys.exit('Application health check failed: endpoint unreachable or returned HTTP status >= 500')
           "
 
           if [ $? -eq 0 ] && [ -f /tmp/deploy_details.json ]; then
@@ -418,7 +421,7 @@ jobs:
             echo "Deployment succeeded. Details: ${DEPLOY_DETAILS}"
             send_callback "deployment" "success" "Application deployed successfully to AWS ECS Fargate." "${DEPLOY_DETAILS}"
           else
-            DEPLOY_ERR="AWS ECS Fargate deployment failed."
+            DEPLOY_ERR="AWS ECS Fargate deployment or health check failed."
             echo "${DEPLOY_ERR}"
             send_callback "deployment" "failed" "${DEPLOY_ERR}" "{}" "${DEPLOY_ERR}"
             exit 1

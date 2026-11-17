@@ -1,0 +1,178 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'DevSecOps Platform: Production AWS ECS Fargate, ALB, and CloudWatch Infrastructure'
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: 'Target VPC for DevSecOps Platform and deployed applications'
+
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: 'List of at least two Subnets across different AZs for ALB and Fargate'
+
+  CertificateArn:
+    Type: String
+    Default: ''
+    Description: 'Optional ACM Certificate ARN for HTTPS. Leave empty to use HTTP.'
+
+  EnvironmentName:
+    Type: String
+    Default: 'production'
+    Description: 'Environment name tag'
+
+Conditions:
+  HasCertificate: !Not [!Equals [!Ref CertificateArn, '']]
+
+Resources:
+  # ========================================================
+  # CLOUDWATCH LOG GROUPS
+  # ========================================================
+  PlatformLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: '/ecs/devsecops-platform'
+      RetentionInDays: 14
+
+  AppsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: '/ecs/devsecops-apps'
+      RetentionInDays: 7
+
+  # ========================================================
+  # SECURITY GROUPS
+  # ========================================================
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: 'Allow public inbound HTTP/HTTPS to Application Load Balancer'
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: 'devsecops-alb-sg'
+
+  PlatformTaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: 'Allow inbound port 5000 only from ALB'
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5000
+          ToPort: 5000
+          SourceSecurityGroupId: !Ref AlbSecurityGroup
+      Tags:
+        - Key: Name
+          Value: 'devsecops-platform-task-sg'
+
+  # ========================================================
+  # APPLICATION LOAD BALANCER & TARGET GROUP
+  # ========================================================
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: 'devsecops-alb'
+      Scheme: 'internet-facing'
+      Type: 'application'
+      Subnets: !Ref SubnetIds
+      SecurityGroups:
+        - !Ref AlbSecurityGroup
+      Tags:
+        - Key: Name
+          Value: 'devsecops-alb'
+
+  PlatformTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: 'tg-devsecops-platform'
+      Port: 5000
+      Protocol: 'HTTP'
+      VpcId: !Ref VpcId
+      TargetType: 'ip'
+      HealthCheckEnabled: true
+      HealthCheckPath: '/api/health'
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: '200'
+      Tags:
+        - Key: Name
+          Value: 'tg-devsecops-platform'
+
+  HttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: 'HTTP'
+      DefaultActions:
+        - Type: 'forward'
+          TargetGroupArn: !Ref PlatformTargetGroup
+
+  # ========================================================
+  # ECS CLUSTER
+  # ========================================================
+  EcsCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: 'devsecops-cluster'
+      CapacityProviders:
+        - 'FARGATE'
+        - 'FARGATE_SPOT'
+      DefaultCapacityProviderStrategy:
+        - CapacityProvider: 'FARGATE'
+          Weight: 1
+      Tags:
+        - Key: Name
+          Value: 'devsecops-cluster'
+
+  # ========================================================
+  # IAM EXECUTION ROLE
+  # ========================================================
+  EcsExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: 'ecsTaskExecutionRole'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: 'ecs-tasks.amazonaws.com'
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy'
+
+Outputs:
+  AlbDnsName:
+    Description: 'Public Stable URL for DevSecOps Platform'
+    Value: !GetAtt ApplicationLoadBalancer.DNSName
+    Export:
+      Name: DevSecOps-AlbDnsName
+
+  AlbArn:
+    Description: 'ARN of the Application Load Balancer'
+    Value: !Ref ApplicationLoadBalancer
+
+  ClusterName:
+    Description: 'ECS Cluster Name'
+    Value: !Ref EcsCluster
+
+  PlatformSecurityGroupId:
+    Description: 'Security Group for DevSecOps Platform tasks'
+    Value: !Ref PlatformTaskSecurityGroup
+
+  TargetGroupArn:
+    Description: 'Target Group ARN for Platform'
+    Value: !Ref PlatformTargetGroup

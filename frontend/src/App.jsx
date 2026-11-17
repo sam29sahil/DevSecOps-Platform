@@ -16,11 +16,11 @@ import Reports from "./pages/Reports";
 import Containers from "./pages/Containers";
 import AwsActivity from "./pages/AwsActivity";
 import Deployments from "./pages/Deployments";
+import Settings from "./pages/Settings";
 
 function App() {
   return (
     <Routes>
-
       {/* Root */}
       <Route
         path="/"
@@ -44,7 +44,12 @@ function App() {
         element={<ProjectDetails />}
       />
 
-      {/* Scans */}
+      {/* Security Scans */}
+      <Route
+        path="/scans"
+        element={<ScanHistory />}
+      />
+
       <Route
         path="/scan-history"
         element={<ScanHistory />}
@@ -73,27 +78,35 @@ function App() {
         element={<Deployments />}
       />
 
+      {/* Docker Images & Workloads */}
       <Route
         path="/containers"
         element={<Containers />}
       />
 
+      {/* AWS Infrastructure */}
       <Route
         path="/aws"
         element={<AwsActivity />}
       />
 
+      {/* Reports */}
       <Route
         path="/reports"
         element={<Reports />}
       />
 
-      {/* Unknown URL */}
+      {/* Settings */}
+      <Route
+        path="/settings"
+        element={<Settings />}
+      />
+
+      {/* Fallback */}
       <Route
         path="*"
         element={<Navigate to="/dashboard" replace />}
       />
-
     </Routes>
   );
 }

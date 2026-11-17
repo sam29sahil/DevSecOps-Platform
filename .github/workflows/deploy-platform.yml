@@ -1,0 +1,171 @@
+name: Deploy DevSecOps Platform to AWS
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - 'README.md'
+      - 'docs/**'
+  workflow_dispatch:
+    inputs:
+      ecs_cluster:
+        description: 'Target ECS Cluster'
+        required: false
+        default: 'devsecops-cluster'
+      ecs_service:
+        description: 'Target ECS Service'
+        required: false
+        default: 'devsecops-platform-service'
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ap-south-1
+  AWS_ACCOUNT_ID: '288418346751'
+  OIDC_ROLE_ARN: arn:aws:iam::288418346751:role/DevSecOpsPlatform-GitHubActions
+  ECR_REPOSITORY: devsecops-platform
+  ECS_CLUSTER: ${{ github.event.inputs.ecs_cluster || 'devsecops-cluster' }}
+  ECS_SERVICE: ${{ github.event.inputs.ecs_service || 'devsecops-platform-service' }}
+  EXECUTION_ROLE_ARN: arn:aws:iam::288418346751:role/ecsTaskExecutionRole
+
+jobs:
+  test-and-build:
+    name: Test & Build Platform
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-mock
+
+      - name: Run Backend Tests
+        run: |
+          pytest -v
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build Frontend
+        working-directory: frontend
+        run: |
+          npm ci || npm install
+          npm run build
+
+  deploy-to-aws:
+    name: Deploy to AWS ECS Fargate
+    needs: test-and-build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.OIDC_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, Tag, and Push Platform Docker Image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: platform-${{ github.sha }}
+        run: |
+          IMAGE_URI="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+          IMAGE_LATEST="${ECR_REGISTRY}/${ECR_REPOSITORY}:platform-latest"
+
+          echo "Building Docker image: ${IMAGE_URI}"
+          docker build -t "${IMAGE_URI}" -t "${IMAGE_LATEST}" -f Dockerfile .
+
+          echo "Pushing Docker images to ECR..."
+          docker push "${IMAGE_URI}"
+          docker push "${IMAGE_LATEST}"
+
+          echo "PLATFORM_IMAGE=${IMAGE_URI}" >> $GITHUB_ENV
+
+      - name: Ensure CloudWatch Log Group Exists
+        run: |
+          aws logs create-log-group --log-group-name /ecs/devsecops-platform --region ${{ env.AWS_REGION }} || true
+
+      - name: Register ECS Task Definition
+        id: task-def
+        run: |
+          TASK_DEF=$(cat <<EOF
+          {
+            "family": "devsecops-platform-task",
+            "networkMode": "awsvpc",
+            "requiresCompatibilities": ["FARGATE"],
+            "cpu": "512",
+            "memory": "1024",
+            "executionRoleArn": "${{ env.EXECUTION_ROLE_ARN }}",
+            "containerDefinitions": [
+              {
+                "name": "devsecops-platform",
+                "image": "${{ env.PLATFORM_IMAGE }}",
+                "essential": true,
+                "portMappings": [
+                  {
+                    "containerPort": 5000,
+                    "hostPort": 5000,
+                    "protocol": "tcp"
+                  }
+                ],
+                "logConfiguration": {
+                  "logDriver": "awslogs",
+                  "options": {
+                    "awslogs-group": "/ecs/devsecops-platform",
+                    "awslogs-region": "${{ env.AWS_REGION }}",
+                    "awslogs-stream-prefix": "platform"
+                  }
+                },
+                "environment": [
+                  {"name": "PORT", "value": "5000"},
+                  {"name": "AWS_REGION", "value": "${{ env.AWS_REGION }}"},
+                  {"name": "AWS_ECS_CLUSTER", "value": "${{ env.ECS_CLUSTER }}"},
+                  {"name": "AWS_ECR_REPOSITORY", "value": "${{ env.ECR_REPOSITORY }}"}
+                ]
+              }
+            ]
+          }
+          EOF
+          )
+          echo "${TASK_DEF}" > /tmp/platform-task-def.json
+          TASK_DEF_ARN=$(aws ecs register-task-definition --cli-input-json file:///tmp/platform-task-def.json --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "Registered Task Definition: ${TASK_DEF_ARN}"
+          echo "TASK_DEF_ARN=${TASK_DEF_ARN}" >> $GITHUB_ENV
+
+      - name: Update or Create ECS Fargate Service
+        run: |
+          SERVICE_EXISTS=$(aws ecs describe-services --cluster ${{ env.ECS_CLUSTER }} --services ${{ env.ECS_SERVICE }} --query 'services[?status==`ACTIVE`].serviceName' --output text || echo "")
+
+          if [ -n "${SERVICE_EXISTS}" ]; then
+            echo "Updating existing service ${{ env.ECS_SERVICE }}..."
+            aws ecs update-service \
+              --cluster ${{ env.ECS_CLUSTER }} \
+              --service ${{ env.ECS_SERVICE }} \
+              --task-definition ${{ env.TASK_DEF_ARN }} \
+              --force-new-deployment
+          else
+            echo "ECS Service ${{ env.ECS_SERVICE }} does not exist yet. Please create service with VPC subnets and ALB Target Group."
+          fi

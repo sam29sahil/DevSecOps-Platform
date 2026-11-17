@@ -1,4 +1,6 @@
-from flask import Flask, jsonify
+from pathlib import Path
+from flask import Flask, jsonify, send_from_directory
+from flask_cors import CORS
 
 from app.models import init_db
 from app.routes import (
@@ -12,7 +14,6 @@ from app.routes import (
     deployments_bp,
     notifications_bp,
 )
-from flask_cors import CORS
 
 
 def create_app():
@@ -46,6 +47,9 @@ def create_app():
     app.register_blueprint(aws_bp)
     app.register_blueprint(deployments_bp)
     app.register_blueprint(notifications_bp)
+
+    dist_dir = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+
     @app.get("/api/health")
     def health_check():
         return jsonify({
@@ -54,8 +58,16 @@ def create_app():
             "status": "operational",
         })
 
-    @app.get("/")
-    def api_root():
+    @app.route("/", defaults={"path": ""})
+    @app.route("/<path:path>")
+    def serve_frontend(path):
+        if path.startswith("api"):
+            return jsonify({"error": "API route not found"}), 404
+        if dist_dir.exists():
+            file_path = dist_dir / path
+            if file_path.is_file():
+                return send_from_directory(dist_dir, path)
+            return send_from_directory(dist_dir, "index.html")
         return jsonify({
             "success": True,
             "service": "DevSecOps Platform API",
