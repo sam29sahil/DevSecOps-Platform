@@ -305,6 +305,19 @@ jobs:
                       'image': image_uri,
                       'essential': True,
                       'portMappings': [{'containerPort': container_port, 'protocol': 'tcp'}],
+                      'environment': [
+                          {'name': 'PORT', 'value': str(container_port)},
+                      ],
+                      'healthCheck': {
+                          'command': [
+                              'CMD-SHELL',
+                              f'python -c "import urllib.request; urllib.request.urlopen(\'http://127.0.0.1:{container_port}/health\', timeout=4)"'
+                          ],
+                          'interval': 30,
+                          'timeout': 5,
+                          'retries': 3,
+                          'startPeriod': 45,
+                      },
                       'logConfiguration': {
                           'logDriver': 'awslogs',
                           'options': {
