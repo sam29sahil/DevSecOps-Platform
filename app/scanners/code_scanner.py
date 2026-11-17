@@ -2,6 +2,41 @@ import os
 import re
 
 
+def redact_secret_string(text):
+    """
+    Redact potential secrets (AWS credentials, GitHub PATs, private keys, passwords)
+    from evidence strings so sensitive data is never logged or written to the database.
+    """
+    if not text:
+        return ""
+
+    # AWS Access Key ID
+    redacted = re.sub(r"AKIA[0-9A-Z]{16}", "AKIA...[REDACTED_AWS_KEY]", text)
+
+    # AWS Secret Access Key or general secret assignments
+    redacted = re.sub(
+        r"(?i)(aws_secret_access_key|secret_key|aws_secret|api_key|token|password|passwd)\s*([:=])\s*([\"'])(?:(?!\3).){4,}([\"'])",
+        r"\1 \2 \3[REDACTED_SECRET]\4",
+        redacted,
+    )
+
+    # GitHub tokens
+    redacted = re.sub(r"ghp_[0-9a-zA-Z]{36}", "ghp_...[REDACTED_GH_TOKEN]", redacted)
+    redacted = re.sub(r"github_pat_[0-9a-zA-Z_]{20,}", "github_pat_...[REDACTED_GH_PAT]", redacted)
+
+    # Slack tokens
+    redacted = re.sub(r"xox[baprs]-[0-9a-zA-Z-]{10,48}", "xox...[REDACTED_SLACK_TOKEN]", redacted)
+
+    # Private key blocks
+    redacted = re.sub(
+        r"-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----",
+        "-----BEGIN PRIVATE KEY...[REDACTED_KEY]-----",
+        redacted,
+    )
+
+    return redacted
+
+
 class CodeScanner:
     """
     Lightweight DevSecOps source-code security scanner.
@@ -95,6 +130,51 @@ class CodeScanner:
                 r"DELETE\s+.*\+\s*",
             ],
         },
+        {
+            "id": "SEC006",
+            "title": "Hardcoded AWS Credentials",
+            "severity": "CRITICAL",
+            "description": (
+                "An AWS Access Key or Secret Access Key pattern was detected."
+            ),
+            "recommendation": (
+                "Use AWS IAM roles, instance profiles, or environment variables instead of hardcoding credentials."
+            ),
+            "patterns": [
+                r"AKIA[0-9A-Z]{16}",
+                r"(?i)aws_secret_access_key\s*=\s*[\"'][^\"']+[\"']",
+            ],
+        },
+        {
+            "id": "SEC007",
+            "title": "Hardcoded Service Token",
+            "severity": "CRITICAL",
+            "description": (
+                "A service token (GitHub PAT, Slack, or generic secret token) was detected."
+            ),
+            "recommendation": (
+                "Store service tokens in a secure secrets manager and inject them via environment variables."
+            ),
+            "patterns": [
+                r"ghp_[0-9a-zA-Z]{36}",
+                r"github_pat_[0-9a-zA-Z_]{20,}",
+                r"xox[baprs]-[0-9a-zA-Z-]{10,48}",
+            ],
+        },
+        {
+            "id": "SEC008",
+            "title": "Private Cryptographic Key Exposed",
+            "severity": "CRITICAL",
+            "description": (
+                "An embedded RSA, EC, or OpenSSH private key was detected."
+            ),
+            "recommendation": (
+                "Never commit private keys into version control. Revoke and generate new keypairs immediately."
+            ),
+            "patterns": [
+                r"-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----",
+            ],
+        },
     ]
 
     IGNORED_DIRECTORIES = {
@@ -107,6 +187,17 @@ class CodeScanner:
         ".vscode",
         "dist",
         "build",
+    }
+
+    KNOWN_FILENAMES = {
+        "dockerfile",
+        "containerfile",
+        "requirements.txt",
+        "gemfile",
+        "package.json",
+        "cargo.toml",
+        "go.mod",
+        ".env.example",
     }
 
     SOURCE_EXTENSIONS = {
@@ -125,14 +216,24 @@ class CodeScanner:
         ".h",
         ".html",
         ".css",
+        ".json",
+        ".yml",
+        ".yaml",
+        ".toml",
+        ".ini",
+        ".cfg",
+        ".env",
+        ".sh",
     }
 
     def __init__(self, source_directory):
         self.source_directory = os.path.abspath(source_directory)
 
     def _is_source_file(self, filename):
+        lower_name = filename.lower()
+        if lower_name in self.KNOWN_FILENAMES:
+            return True
         _, extension = os.path.splitext(filename)
-
         return extension.lower() in self.SOURCE_EXTENSIONS
 
     def _should_ignore(self, directory):
@@ -182,7 +283,7 @@ class CodeScanner:
                             self.source_directory,
                         ),
                         "line": line_number,
-                        "evidence": line.strip()[:500],
+                        "evidence": redact_secret_string(line.strip()[:500]),
                     }
                 )
 

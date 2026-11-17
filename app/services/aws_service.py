@@ -215,6 +215,97 @@ class AwsService:
                 }
             raise
 
+    def start_ecs_service(self, cluster_name=None, service_name=None, desired_count=1):
+        """Update ECS service desiredCount to start or scale up tasks."""
+        cluster = cluster_name or self.cluster
+        if not service_name:
+            raise ValueError("Service name is required to start an ECS service.")
+
+        try:
+            update_resp = self.ecs_client.update_service(
+                cluster=cluster,
+                service=service_name,
+                desiredCount=desired_count,
+            )
+            svc = update_resp.get("service", {})
+            return {
+                "success": True,
+                "cluster": cluster,
+                "service": service_name,
+                "desired_count": desired_count,
+                "status": svc.get("status", "ACTIVE"),
+            }
+        except ClientError:
+            raise
+
+    def restart_ecs_service(self, cluster_name=None, service_name=None):
+        """Trigger a force-new-deployment restart of the ECS service."""
+        cluster = cluster_name or self.cluster
+        if not service_name:
+            raise ValueError("Service name is required to restart an ECS service.")
+
+        try:
+            update_resp = self.ecs_client.update_service(
+                cluster=cluster,
+                service=service_name,
+                forceNewDeployment=True,
+            )
+            svc = update_resp.get("service", {})
+            return {
+                "success": True,
+                "cluster": cluster,
+                "service": service_name,
+                "status": svc.get("status", "ACTIVE"),
+                "deployments": len(svc.get("deployments", [])),
+            }
+        except ClientError:
+            raise
+
+    def verify_application_health(self, app_url, health_path="/", timeout=5):
+        """Perform a real HTTP GET request against the deployed app URL to verify health."""
+        if not app_url:
+            return {"healthy": False, "status_code": None, "error": "No URL provided"}
+
+        target = app_url.rstrip("/") + ("/" + health_path.lstrip("/") if health_path else "")
+        if not (target.startswith("http://") or target.startswith("https://")):
+            target = f"http://{target}"
+
+        import urllib.request
+        import urllib.error
+        import time
+
+        start_time = time.time()
+        try:
+            req = urllib.request.Request(
+                target,
+                headers={"User-Agent": "DevSecOpsPlatform-HealthCheck/1.0"},
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                duration_ms = round((time.time() - start_time) * 1000, 2)
+                code = response.getcode()
+                return {
+                    "healthy": 200 <= code < 400,
+                    "status_code": code,
+                    "response_time_ms": duration_ms,
+                    "url": target,
+                }
+        except urllib.error.HTTPError as e:
+            duration_ms = round((time.time() - start_time) * 1000, 2)
+            return {
+                "healthy": False,
+                "status_code": e.code,
+                "response_time_ms": duration_ms,
+                "error": f"HTTP {e.code}: {e.reason}",
+                "url": target,
+            }
+        except Exception as e:
+            return {
+                "healthy": False,
+                "status_code": None,
+                "error": str(e),
+                "url": target,
+            }
+
     def describe_ecs_service(self, cluster_name=None, service_name=None):
         """Get details of a specific ECS service."""
         cluster = cluster_name or self.cluster

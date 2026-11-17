@@ -13,6 +13,7 @@ import {
   Globe,
   Radio,
   ShieldAlert,
+  Play,
 } from "lucide-react";
 import DashboardLayout from "../layouts/DashboardLayout";
 import {
@@ -20,6 +21,10 @@ import {
   getDeploymentStats,
   stopDeployment,
   deleteDeployment,
+  startDeployment,
+  restartDeployment,
+  stopAllDeployments,
+  checkDeploymentHealth,
 } from "../services/api";
 import "./Deployments.css";
 
@@ -110,6 +115,50 @@ export default function Deployments() {
     return () => clearInterval(interval);
   }, []);
 
+  async function handleStart(id) {
+    try {
+      setActionLoading(id);
+      await startDeployment(id);
+      setMessage(`Deployment ${id} started on AWS ECS.`);
+      await loadData(true);
+    } catch (err) {
+      setError(err.message || "Failed to start deployment.");
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
+  async function handleRestart(id) {
+    if (!window.confirm("Restart this ECS service tasks?")) return;
+    try {
+      setActionLoading(id);
+      await restartDeployment(id);
+      setMessage(`Deployment ${id} restart triggered.`);
+      await loadData(true);
+    } catch (err) {
+      setError(err.message || "Failed to restart deployment.");
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
+  async function handleCheckHealth(id) {
+    try {
+      setActionLoading(id);
+      const res = await checkDeploymentHealth(id);
+      if (res.healthy) {
+        setMessage(`Health check passed for ${id}: 200 OK (${res.details?.response_time_ms || 0}ms)`);
+      } else {
+        setError(`Health check failed for ${id}: ${res.details?.error || "Endpoint unreachable"}`);
+      }
+      await loadData(true);
+    } catch (err) {
+      setError(err.message || "Health check failed.");
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
   async function handleStop(id) {
     if (!window.confirm("Are you sure you want to stop this running ECS deployment?")) return;
     try {
@@ -119,6 +168,20 @@ export default function Deployments() {
       await loadData(true);
     } catch (err) {
       setError(err.message || "Failed to stop deployment.");
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
+  async function handleStopAll() {
+    if (!window.confirm("Stop ALL running ECS deployments across the platform to save AWS resources?")) return;
+    try {
+      setActionLoading("stop-all");
+      const res = await stopAllDeployments();
+      setMessage(res.message || "All active deployments stopped.");
+      await loadData(true);
+    } catch (err) {
+      setError(err.message || "Failed to stop all deployments.");
     } finally {
       setActionLoading(null);
     }
@@ -151,7 +214,7 @@ export default function Deployments() {
             </p>
           </div>
 
-          <div className="header-actions">
+          <div className="header-actions" style={{ display: "flex", gap: "10px", alignItems: "center" }}>
             <button
               type="button"
               className="btn btn-secondary"
@@ -160,6 +223,18 @@ export default function Deployments() {
             >
               <RefreshCw size={15} className={loading ? "spin" : ""} />
               <span>Refresh</span>
+            </button>
+
+            <button
+              type="button"
+              className="btn btn-danger"
+              style={{ background: "#dc2626", color: "#fff", display: "flex", alignItems: "center", gap: "6px" }}
+              onClick={handleStopAll}
+              disabled={actionLoading === "stop-all" || deployments.length === 0}
+              title="Stop all active ECS tasks to prevent unwanted AWS costs"
+            >
+              <Power size={15} />
+              <span>{actionLoading === "stop-all" ? "Stopping All..." : "Stop All Deployments"}</span>
             </button>
           </div>
         </div>
@@ -360,16 +435,54 @@ export default function Deployments() {
                       )}
 
                       <div className="card-action-btns">
-                        {dep.status === "deployed" && (
+                        {dep.status === "stopped" && (
                           <button
                             type="button"
-                            className="btn-action btn-action-stop"
-                            onClick={() => handleStop(dep.deployment_id)}
+                            className="btn-action btn-action-start"
+                            style={{ color: "#10b981", borderColor: "rgba(16, 185, 129, 0.4)" }}
+                            onClick={() => handleStart(dep.deployment_id)}
                             disabled={actionLoading === dep.deployment_id}
-                            title="Stop Application"
+                            title="Start ECS Application"
                           >
-                            <Power size={14} />
-                            <span>Stop</span>
+                            <Play size={14} />
+                            <span>Start</span>
+                          </button>
+                        )}
+                        {(dep.status === "deployed" || dep.status === "running") && (
+                          <>
+                            <button
+                              type="button"
+                              className="btn-action btn-action-restart"
+                              onClick={() => handleRestart(dep.deployment_id)}
+                              disabled={actionLoading === dep.deployment_id}
+                              title="Restart ECS Task"
+                            >
+                              <RefreshCw size={14} />
+                              <span>Restart</span>
+                            </button>
+                            <button
+                              type="button"
+                              className="btn-action btn-action-stop"
+                              onClick={() => handleStop(dep.deployment_id)}
+                              disabled={actionLoading === dep.deployment_id}
+                              title="Stop Application"
+                            >
+                              <Power size={14} />
+                              <span>Stop</span>
+                            </button>
+                          </>
+                        )}
+                        {dep.app_url && (
+                          <button
+                            type="button"
+                            className="btn-action btn-action-health"
+                            style={{ color: "#38bdf8", borderColor: "rgba(56, 189, 248, 0.4)" }}
+                            onClick={() => handleCheckHealth(dep.deployment_id)}
+                            disabled={actionLoading === dep.deployment_id}
+                            title="Run live HTTP health check"
+                          >
+                            <CheckCircle2 size={14} />
+                            <span>Health</span>
                           </button>
                         )}
                         <button

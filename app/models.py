@@ -1,3 +1,4 @@
+import os
 import sqlite3
 from pathlib import Path
 from datetime import datetime
@@ -12,13 +13,20 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 DATABASE_DIR = BASE_DIR / "data"
 DATABASE_DIR.mkdir(parents=True, exist_ok=True)
 
-DATABASE_PATH = DATABASE_DIR / "devsecops.db"
+DEFAULT_DATABASE_PATH = DATABASE_DIR / "devsecops.db"
+
+
+def get_database_path():
+    env_path = os.getenv("DEVSECOPS_DB_PATH") or os.getenv("DATABASE_PATH")
+    if env_path:
+        return Path(env_path)
+    return DEFAULT_DATABASE_PATH
 
 
 def get_db():
     """Create and return a SQLite database connection."""
 
-    connection = sqlite3.connect(DATABASE_PATH)
+    connection = sqlite3.connect(get_database_path())
     connection.row_factory = sqlite3.Row
 
     return connection
@@ -202,6 +210,12 @@ def init_db():
         db.execute("ALTER TABLE projects ADD COLUMN app_type TEXT DEFAULT 'web'")
     if "user_id" not in project_columns:
         db.execute("ALTER TABLE projects ADD COLUMN user_id TEXT DEFAULT 'default_user'")
+    if "dockerfile_path" not in project_columns:
+        db.execute("ALTER TABLE projects ADD COLUMN dockerfile_path TEXT DEFAULT 'Dockerfile'")
+    if "build_context" not in project_columns:
+        db.execute("ALTER TABLE projects ADD COLUMN build_context TEXT DEFAULT '.'")
+    if "health_check_path" not in project_columns:
+        db.execute("ALTER TABLE projects ADD COLUMN health_check_path TEXT DEFAULT '/'")
 
     # ========================================================
     # DEPLOYMENTS
@@ -290,6 +304,10 @@ def create_project(
     source_directory=".",
     app_port=5000,
     app_type="web",
+    dockerfile_path="Dockerfile",
+    build_context=".",
+    health_check_path="/",
+    user_id="default_user",
 ):
     """Create a new project."""
 
@@ -317,11 +335,15 @@ def create_project(
             source_directory,
             app_port,
             app_type,
+            dockerfile_path,
+            build_context,
+            health_check_path,
+            user_id,
             status,
             created_at,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             name,
@@ -331,6 +353,10 @@ def create_project(
             source_directory,
             int(app_port or 5000),
             str(app_type or "web"),
+            str(dockerfile_path or "Dockerfile"),
+            str(build_context or "."),
+            str(health_check_path or "/"),
+            str(user_id or "default_user"),
             "active",
             now,
             now,
@@ -395,6 +421,9 @@ def update_project(
     status="active",
     app_port=None,
     app_type=None,
+    dockerfile_path=None,
+    build_context=None,
+    health_check_path=None,
 ):
     """Update an existing project."""
 
@@ -437,6 +466,18 @@ def update_project(
     if app_type is not None:
         fields.append("app_type = ?")
         values.append(str(app_type))
+
+    if dockerfile_path is not None:
+        fields.append("dockerfile_path = ?")
+        values.append(str(dockerfile_path))
+
+    if build_context is not None:
+        fields.append("build_context = ?")
+        values.append(str(build_context))
+
+    if health_check_path is not None:
+        fields.append("health_check_path = ?")
+        values.append(str(health_check_path))
 
     values.append(project_id)
 

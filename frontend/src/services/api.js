@@ -85,6 +85,12 @@ export async function deleteProject(projectId) {
   });
 }
 
+export async function deployProject(projectId) {
+  return request(`/projects/${projectId}/deploy`, {
+    method: "POST",
+  });
+}
+
 /* =========================================================
    SCANS
 ========================================================= */
@@ -343,6 +349,28 @@ export async function deleteDeployment(identifier) {
   return request(`/deployments/${identifier}`, {
     method: "DELETE",
   });
+}
+
+export async function startDeployment(identifier) {
+  return request(`/deployments/${identifier}/start`, {
+    method: "POST",
+  });
+}
+
+export async function restartDeployment(identifier) {
+  return request(`/deployments/${identifier}/restart`, {
+    method: "POST",
+  });
+}
+
+export async function stopAllDeployments() {
+  return request("/deployments/stop-all", {
+    method: "POST",
+  });
+}
+
+export async function checkDeploymentHealth(identifier) {
+  return request(`/deployments/${identifier}/health`);
 }
 
 /* =========================================================

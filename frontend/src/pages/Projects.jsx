@@ -7,18 +7,23 @@ import {
   getProjects,
   createProject,
   deleteProject,
+  deployProject,
+  getDeployments,
 } from "../services/api";
 
 function Projects() {
   const [projects, setProjects] = useState([]);
+  const [deployments, setDeployments] = useState([]);
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [deploySuccess, setDeploySuccess] = useState("");
 
   const [showCreateForm, setShowCreateForm] = useState(false);
 
   const [creating, setCreating] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
+  const [deployingId, setDeployingId] = useState(null);
 
   /* =========================================================
      SEARCH / FILTER
@@ -37,6 +42,10 @@ function Projects() {
     repository_url: "",
     description: "",
     app_port: 5000,
+    dockerfile_path: "Dockerfile",
+    build_context: ".",
+    health_check_path: "/",
+    start_pipeline: true,
   });
 
   /* =========================================================
@@ -48,7 +57,10 @@ function Projects() {
       setLoading(true);
       setError("");
 
-      const data = await getProjects();
+      const [data, depsData] = await Promise.all([
+        getProjects(),
+        getDeployments(),
+      ]);
 
       if (!data.success) {
         throw new Error(
@@ -61,6 +73,13 @@ function Projects() {
           ? data.projects
           : []
       );
+      if (depsData && depsData.success) {
+        setDeployments(
+          Array.isArray(depsData.deployments)
+            ? depsData.deployments
+            : []
+        );
+      }
     } catch (err) {
       console.error(
         "Projects loading error:",
@@ -85,11 +104,11 @@ function Projects() {
   ========================================================= */
 
   function handleChange(event) {
-    const { name, value } = event.target;
+    const { name, value, type, checked } = event.target;
 
     setFormData((previous) => ({
       ...previous,
-      [name]: value,
+      [name]: type === "checkbox" ? checked : value,
     }));
   }
 
@@ -100,6 +119,10 @@ function Projects() {
       repository_url: "",
       description: "",
       app_port: 5000,
+      dockerfile_path: "Dockerfile",
+      build_context: ".",
+      health_check_path: "/",
+      start_pipeline: true,
     });
   }
 
@@ -127,19 +150,18 @@ function Projects() {
     try {
       setCreating(true);
       setError("");
+      setDeploySuccess("");
 
       const data = await createProject({
         name: formData.name.trim(),
-
-        branch:
-          formData.branch.trim() ||
-          "main",
-
-        repository_url:
-          formData.repository_url.trim(),
-
-        description:
-          formData.description.trim(),
+        branch: formData.branch.trim() || "main",
+        repository_url: formData.repository_url.trim(),
+        description: formData.description.trim(),
+        app_port: formData.app_port,
+        dockerfile_path: formData.dockerfile_path.trim() || "Dockerfile",
+        build_context: formData.build_context.trim() || ".",
+        health_check_path: formData.health_check_path.trim() || "/",
+        start_pipeline: formData.start_pipeline,
       });
 
       if (!data.success) {
@@ -147,6 +169,12 @@ function Projects() {
           data.error ||
             "Failed to create project."
         );
+      }
+
+      if (data.pipeline_run) {
+        setDeploySuccess(`Project created! CI/CD pipeline triggered and deploying to AWS ECS Fargate.`);
+      } else {
+        setDeploySuccess(`Project created successfully.`);
       }
 
       await loadProjects();
@@ -165,6 +193,31 @@ function Projects() {
       );
     } finally {
       setCreating(false);
+    }
+  }
+
+  /* =========================================================
+     TRIGGER PROJECT DEPLOYMENT
+  ========================================================= */
+
+  async function handleDeployProject(projectId) {
+    try {
+      setDeployingId(projectId);
+      setError("");
+      setDeploySuccess("");
+
+      const res = await deployProject(projectId);
+      if (!res.success) {
+        throw new Error(res.error || "Failed to trigger project deployment.");
+      }
+
+      setDeploySuccess(`DevSecOps CI/CD pipeline triggered for project #${projectId}. AWS deployment in progress.`);
+      await loadProjects();
+    } catch (err) {
+      console.error("Project deployment trigger error:", err);
+      setError(err.message || "Failed to trigger deployment.");
+    } finally {
+      setDeployingId(null);
     }
   }
 
@@ -383,6 +436,12 @@ function Projects() {
           </div>
         )}
 
+        {deploySuccess && (
+          <div style={{ padding: "12px 16px", borderRadius: "8px", background: "rgba(16, 185, 129, 0.15)", border: "1px solid rgba(16, 185, 129, 0.4)", color: "#10b981", marginBottom: "16px", fontSize: "14px" }}>
+            <strong>✓ Success:</strong> {deploySuccess}
+          </div>
+        )}
+
         {/* =================================================
             CREATE PROJECT FORM
         ================================================= */}
@@ -512,6 +571,63 @@ function Projects() {
                   Port your app listens on (e.g. 5000 for Flask, 3000 for Node/React, 8000 for Django, 80 for Nginx).
                 </span>
 
+              </div>
+
+              <div className="form-grid">
+
+                {/* DOCKERFILE PATH */}
+                <div className="form-group">
+                  <label htmlFor="dockerfile_path">
+                    Dockerfile Path
+                  </label>
+                  <input
+                    id="dockerfile_path"
+                    name="dockerfile_path"
+                    type="text"
+                    value={formData.dockerfile_path}
+                    onChange={handleChange}
+                    placeholder="Dockerfile"
+                  />
+                  <span style={{ fontSize: "11px", color: "#64748b", marginTop: "4px", display: "block" }}>
+                    Relative path to Dockerfile (default: Dockerfile)
+                  </span>
+                </div>
+
+                {/* HEALTH CHECK PATH */}
+                <div className="form-group">
+                  <label htmlFor="health_check_path">
+                    Health Check Path
+                  </label>
+                  <input
+                    id="health_check_path"
+                    name="health_check_path"
+                    type="text"
+                    value={formData.health_check_path}
+                    onChange={handleChange}
+                    placeholder="/"
+                  />
+                  <span style={{ fontSize: "11px", color: "#64748b", marginTop: "4px", display: "block" }}>
+                    HTTP path verified before marking deployment live (e.g. / or /health)
+                  </span>
+                </div>
+
+              </div>
+
+              {/* AUTOMATED DEPLOYMENT CHECKBOX */}
+              <div className="form-group" style={{ background: "rgba(56, 189, 248, 0.08)", padding: "12px 14px", borderRadius: "8px", border: "1px solid rgba(56, 189, 248, 0.2)" }}>
+                <label style={{ display: "flex", alignItems: "center", gap: "10px", cursor: "pointer", fontWeight: 600, color: "#38bdf8" }}>
+                  <input
+                    type="checkbox"
+                    name="start_pipeline"
+                    checked={formData.start_pipeline}
+                    onChange={handleChange}
+                    style={{ width: "18px", height: "18px", cursor: "pointer" }}
+                  />
+                  Deploy immediately to AWS ECS Fargate
+                </label>
+                <span style={{ fontSize: "12px", color: "#94a3b8", display: "block", marginTop: "4px", marginLeft: "28px" }}>
+                  When enabled, automatically triggers the DevSecOps CI/CD pipeline, scans code, builds & pushes container to ECR, and deploys on ECS.
+                </span>
               </div>
 
               {/* DESCRIPTION */}
@@ -845,11 +961,52 @@ function Projects() {
 
                       </div>
 
+                      {/* PORT */}
+                      <div className="meta-item">
+                        <span>Port</span>
+                        <strong>{project.app_port || 5000}</strong>
+                      </div>
+
                     </div>
+
+                    {/* LIVE URL IF DEPLOYED */}
+                    {(() => {
+                      const dep = deployments.find(
+                        (d) => Number(d.project_id) === Number(project.id) && d.app_url
+                      );
+                      if (!dep || !dep.app_url) return null;
+                      return (
+                        <div style={{ marginTop: "10px", padding: "8px 12px", background: "rgba(16, 185, 129, 0.12)", border: "1px solid rgba(16, 185, 129, 0.3)", borderRadius: "6px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
+                          <span style={{ fontSize: "11px", color: "#10b981", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                            ● Live on AWS
+                          </span>
+                          <a
+                            href={dep.app_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            style={{ fontSize: "12px", color: "#38bdf8", textDecoration: "underline", wordBreak: "break-all" }}
+                            title={dep.app_url}
+                          >
+                            {dep.app_url} ↗
+                          </a>
+                        </div>
+                      );
+                    })()}
 
                     {/* CARD ACTIONS */}
 
                     <div className="project-card-actions">
+
+                      <button
+                        type="button"
+                        className="primary-button"
+                        style={{ padding: "6px 14px", fontSize: "13px" }}
+                        onClick={() => handleDeployProject(project.id)}
+                        disabled={deployingId === project.id}
+                        title="Run DevSecOps CI/CD pipeline and deploy to AWS ECS"
+                      >
+                        {deployingId === project.id ? "Deploying..." : "⚡ Deploy"}
+                      </button>
 
                       <Link
                         to={`/projects/${project.id}`}

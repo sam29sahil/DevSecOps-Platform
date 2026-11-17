@@ -432,10 +432,14 @@ def test_execution_mode_no_render():
 def test_poll_github_workflow_run(client, test_pipeline):
     from app.routes.pipelines import poll_github_workflow_run, save_pipeline_run
 
-    # Create run in database
-    run_resp = client.post(f"/api/pipelines/{test_pipeline['id']}/run")
-    assert run_resp.status_code == 201
-    run_id = run_resp.get_json()["run"]["id"]
+    # Create run in database with mocked local stages
+    with patch("app.routes.pipelines.checkout_repository", return_value=("/tmp/fake-workspace", {"status": "success"})):
+        with patch("app.routes.pipelines.run_command", return_value={"returncode": 0, "stdout": "", "stderr": ""}):
+            with patch("app.routes.pipelines.CodeScanner.scan", return_value={"files_scanned": 1, "findings": [], "security_score": 100}):
+                with patch("app.routes.pipelines.dispatch_github_workflow"):
+                    run_resp = client.post(f"/api/pipelines/{test_pipeline['id']}/run")
+                    assert run_resp.status_code == 201
+                    run_id = run_resp.get_json()["run"]["id"]
 
     mock_runs_response = Mock()
     mock_runs_response.status_code = 200
@@ -500,9 +504,13 @@ def test_poll_github_workflow_run(client, test_pipeline):
 
 
 def test_sync_pipeline_run_endpoint(client, test_pipeline):
-    run_resp = client.post(f"/api/pipelines/{test_pipeline['id']}/run")
-    assert run_resp.status_code == 201
-    run_id = run_resp.get_json()["run"]["id"]
+    with patch("app.routes.pipelines.checkout_repository", return_value=("/tmp/fake-workspace", {"status": "success"})):
+        with patch("app.routes.pipelines.run_command", return_value={"returncode": 0, "stdout": "", "stderr": ""}):
+            with patch("app.routes.pipelines.CodeScanner.scan", return_value={"files_scanned": 1, "findings": [], "security_score": 100}):
+                with patch("app.routes.pipelines.dispatch_github_workflow"):
+                    run_resp = client.post(f"/api/pipelines/{test_pipeline['id']}/run")
+                    assert run_resp.status_code == 201
+                    run_id = run_resp.get_json()["run"]["id"]
 
     sync_resp = client.post(f"/api/pipelines/runs/{run_id}/sync")
     assert sync_resp.status_code == 200

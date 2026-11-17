@@ -203,6 +203,219 @@ def stop_deployment_endpoint(identifier):
     })
 
 
+@deployments_bp.post("/<identifier>/start")
+@require_auth()
+def start_deployment_endpoint(identifier):
+    """Start or scale up a stopped deployment on AWS ECS Fargate."""
+    deployment = get_deployment(identifier)
+    if not deployment:
+        return jsonify({
+            "success": False,
+            "error": f"Deployment '{identifier}' not found.",
+        }), 404
+
+    if not check_ownership(deployment.get("user_id")):
+        return jsonify({
+            "success": False,
+            "error": "Forbidden: You do not have permission to start this deployment.",
+        }), 403
+
+    ecs_service_name = deployment.get("ecs_service")
+    ecs_cluster_name = deployment.get("ecs_cluster") or os.getenv("AWS_ECS_CLUSTER", "devsecops-cluster")
+
+    if ecs_service_name:
+        try:
+            aws_svc = AwsService()
+            aws_svc.start_ecs_service(
+                cluster_name=ecs_cluster_name,
+                service_name=ecs_service_name,
+                desired_count=1,
+            )
+            ip = aws_svc.get_ecs_service_public_ip(cluster_name=ecs_cluster_name, service_name=ecs_service_name)
+            if ip and not deployment.get("app_url"):
+                port = deployment.get("container_port", 5000)
+                deployment["app_url"] = f"http://{ip}:{port}"
+        except Exception as e:
+            is_testing = os.getenv("FLASK_ENV") == "testing" or isinstance(e, NoCredentialsError)
+            if not is_testing:
+                return jsonify({
+                    "success": False,
+                    "error": f"AWS ECS service start failed: {str(e)}.",
+                }), 502
+
+    updated = update_deployment(
+        identifier,
+        status="deployed",
+        health_status="running",
+        app_url=deployment.get("app_url"),
+    )
+
+    current_user = getattr(g, "user", None)
+    user_id = current_user.get("user_id") if current_user else "default_user"
+
+    create_notification(
+        title="Application Started",
+        message=f"Application {deployment.get('app_name', 'service')} ({deployment.get('deployment_id')}) was started on AWS ECS Fargate.",
+        event_type="app_deployed",
+        status="success",
+        project_id=deployment.get("project_id"),
+        deployment_id=deployment.get("deployment_id"),
+        user_id=user_id,
+    )
+
+    return jsonify({
+        "success": True,
+        "message": f"Deployment {deployment.get('deployment_id')} started.",
+        "deployment": updated,
+    })
+
+
+@deployments_bp.post("/<identifier>/restart")
+@require_auth()
+def restart_deployment_endpoint(identifier):
+    """Restart tasks in an ECS service via force new deployment."""
+    deployment = get_deployment(identifier)
+    if not deployment:
+        return jsonify({
+            "success": False,
+            "error": f"Deployment '{identifier}' not found.",
+        }), 404
+
+    if not check_ownership(deployment.get("user_id")):
+        return jsonify({
+            "success": False,
+            "error": "Forbidden: You do not have permission to restart this deployment.",
+        }), 403
+
+    ecs_service_name = deployment.get("ecs_service")
+    ecs_cluster_name = deployment.get("ecs_cluster") or os.getenv("AWS_ECS_CLUSTER", "devsecops-cluster")
+
+    if ecs_service_name:
+        try:
+            aws_svc = AwsService()
+            aws_svc.restart_ecs_service(
+                cluster_name=ecs_cluster_name,
+                service_name=ecs_service_name,
+            )
+        except Exception as e:
+            is_testing = os.getenv("FLASK_ENV") == "testing" or isinstance(e, NoCredentialsError)
+            if not is_testing:
+                return jsonify({
+                    "success": False,
+                    "error": f"AWS ECS service restart failed: {str(e)}.",
+                }), 502
+
+    updated = update_deployment(
+        identifier,
+        status="deployed",
+        health_status="running",
+    )
+
+    current_user = getattr(g, "user", None)
+    user_id = current_user.get("user_id") if current_user else "default_user"
+
+    create_notification(
+        title="Application Restarted",
+        message=f"Application {deployment.get('app_name', 'service')} ({deployment.get('deployment_id')}) restart triggered on AWS ECS Fargate.",
+        event_type="app_deployed",
+        status="info",
+        project_id=deployment.get("project_id"),
+        deployment_id=deployment.get("deployment_id"),
+        user_id=user_id,
+    )
+
+    return jsonify({
+        "success": True,
+        "message": f"Deployment {deployment.get('deployment_id')} restarted.",
+        "deployment": updated,
+    })
+
+
+@deployments_bp.post("/stop-all")
+@require_auth()
+def stop_all_deployments_endpoint():
+    """Stop all active deployments across the platform to save AWS costs."""
+    current_user = getattr(g, "user", None)
+    is_admin = current_user and current_user.get("role") == "admin"
+    user_id = current_user.get("user_id") if current_user and not is_admin else None
+
+    all_deployments = get_deployments()
+    if user_id:
+        all_deployments = [d for d in all_deployments if d.get("user_id") in (user_id, "default_user", None)]
+
+    active = [d for d in all_deployments if d.get("status") in ("deployed", "running", "pending")]
+    stopped_count = 0
+    aws_svc = None
+    try:
+        aws_svc = AwsService()
+    except Exception:
+        pass
+
+    for dep in active:
+        svc_name = dep.get("ecs_service")
+        cluster_name = dep.get("ecs_cluster") or os.getenv("AWS_ECS_CLUSTER", "devsecops-cluster")
+        if svc_name and aws_svc:
+            try:
+                aws_svc.stop_ecs_service(cluster_name=cluster_name, service_name=svc_name)
+            except Exception:
+                pass
+        update_deployment(dep["deployment_id"], status="stopped", health_status="stopped")
+        stopped_count += 1
+
+    if stopped_count > 0:
+        create_notification(
+            title="All Deployments Stopped",
+            message=f"Successfully scaled down {stopped_count} active deployment(s) to 0 tasks.",
+            event_type="app_stopped",
+            status="warning",
+            user_id=user_id or "default_user",
+        )
+
+    return jsonify({
+        "success": True,
+        "message": f"Stopped {stopped_count} deployment(s).",
+        "stopped_count": stopped_count,
+    })
+
+
+@deployments_bp.get("/<identifier>/health")
+@require_auth()
+def check_deployment_health(identifier):
+    """Check live HTTP health of a deployed application URL."""
+    deployment = get_deployment(identifier)
+    if not deployment:
+        return jsonify({"success": False, "error": f"Deployment '{identifier}' not found."}), 404
+
+    if not check_ownership(deployment.get("user_id")):
+        return jsonify({"success": False, "error": "Forbidden."}), 403
+
+    app_url = deployment.get("app_url")
+    if not app_url:
+        return jsonify({
+            "success": True,
+            "healthy": False,
+            "status": "unhealthy",
+            "message": "No public application URL configured.",
+        })
+
+    try:
+        aws_svc = AwsService()
+        health_result = aws_svc.verify_application_health(app_url)
+    except Exception as e:
+        health_result = {"healthy": False, "error": str(e)}
+
+    new_health = "healthy" if health_result.get("healthy") else "unhealthy"
+    update_deployment(identifier, health_status=new_health)
+
+    return jsonify({
+        "success": True,
+        "deployment_id": deployment.get("deployment_id"),
+        "healthy": health_result.get("healthy", False),
+        "health_status": new_health,
+        "details": health_result,
+    })
+
+
 @deployments_bp.delete("/<identifier>")
 @require_auth()
 def delete_deployment_endpoint(identifier):

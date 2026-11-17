@@ -109,6 +109,10 @@ def create_new_project():
         app_port = 5000
 
     app_type = str(data.get("app_type", "web")).strip() or "web"
+    dockerfile_path = str(data.get("dockerfile_path", "Dockerfile")).strip() or "Dockerfile"
+    build_context = str(data.get("build_context", ".")).strip() or "."
+    health_check_path = str(data.get("health_check_path", "/")).strip() or "/"
+    start_pipeline = bool(data.get("start_pipeline") or data.get("deploy_immediately"))
 
     # -----------------------------------------------------
     # Create project
@@ -122,6 +126,9 @@ def create_new_project():
         source_directory=source_directory,
         app_port=app_port,
         app_type=app_type,
+        dockerfile_path=dockerfile_path,
+        build_context=build_context,
+        health_check_path=health_check_path,
     )
 
     create_notification(
@@ -132,10 +139,37 @@ def create_new_project():
         project_id=project["id"],
     )
 
+    # Automatically create associated DevSecOps pipeline
+    pipeline = None
+    run_response = None
+    try:
+        from app.routes.pipelines import create_pipeline_record, run_pipeline
+        pipeline = create_pipeline_record(
+            name=f"{name} Pipeline",
+            description=f"Automated CI/CD pipeline for {name}",
+            branch=branch,
+            repository_url=repository_url,
+            project_id=project["id"],
+            docker_enabled=True,
+            registry_enabled=True,
+            deployment_enabled=True,
+        )
+
+        if start_pipeline and pipeline:
+            resp = run_pipeline(pipeline["id"])
+            if isinstance(resp, tuple):
+                run_response = resp[0].get_json() if hasattr(resp[0], "get_json") else None
+            elif hasattr(resp, "get_json"):
+                run_response = resp.get_json()
+    except Exception as e:
+        pass
+
     return jsonify({
         "success": True,
         "message": "Project created successfully",
         "project": project,
+        "pipeline": pipeline,
+        "pipeline_run": run_response,
     }), 201
 
 
@@ -231,6 +265,12 @@ def update_existing_project(project_id):
         )
     ).strip() or "active"
 
+    app_port = data.get("app_port")
+    app_type = data.get("app_type")
+    dockerfile_path = data.get("dockerfile_path")
+    build_context = data.get("build_context")
+    health_check_path = data.get("health_check_path")
+
     # -----------------------------------------------------
     # Update project
     # -----------------------------------------------------
@@ -243,6 +283,11 @@ def update_existing_project(project_id):
         branch=branch,
         source_directory=source_directory,
         status=status,
+        app_port=app_port,
+        app_type=app_type,
+        dockerfile_path=dockerfile_path,
+        build_context=build_context,
+        health_check_path=health_check_path,
     )
 
     return jsonify({
@@ -250,6 +295,39 @@ def update_existing_project(project_id):
         "message": "Project updated successfully",
         "project": project,
     })
+
+
+# =========================================================
+# TRIGGER PROJECT PIPELINE (ONE-CLICK DEPLOY)
+# =========================================================
+
+@projects_bp.post("/<int:project_id>/deploy")
+def deploy_project_pipeline(project_id):
+    """Trigger the CI/CD pipeline and AWS deployment for a project."""
+    project = get_project(project_id)
+    if not project:
+        return jsonify({"success": False, "error": "Project not found"}), 404
+
+    from app.routes.pipelines import get_all_pipelines, create_pipeline_record, run_pipeline
+
+    all_pipes = get_all_pipelines()
+    project_pipes = [p for p in all_pipes if p.get("project_id") == project_id]
+
+    if project_pipes:
+        target_pipe = project_pipes[0]
+    else:
+        target_pipe = create_pipeline_record(
+            name=f"{project['name']} Pipeline",
+            description=f"Automated CI/CD pipeline for {project['name']}",
+            branch=project.get("branch", "main"),
+            repository_url=project.get("repository_url", ""),
+            project_id=project_id,
+            docker_enabled=True,
+            registry_enabled=True,
+            deployment_enabled=True,
+        )
+
+    return run_pipeline(target_pipe["id"])
 
 
 # =========================================================

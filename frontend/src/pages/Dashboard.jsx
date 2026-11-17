@@ -7,6 +7,8 @@ import {
   getScans,
   getVulnerabilities,
   getPipelines,
+  getDeployments,
+  getAwsOverview,
 } from "../services/api";
 
 import "./Dashboard.css";
@@ -19,6 +21,8 @@ function Dashboard() {
   const [scans, setScans] = useState([]);
   const [vulnerabilities, setVulnerabilities] = useState([]);
   const [pipelines, setPipelines] = useState([]);
+  const [deployments, setDeployments] = useState([]);
+  const [awsInfo, setAwsInfo] = useState(null);
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -45,11 +49,15 @@ function Dashboard() {
         scansResponse,
         vulnerabilitiesResponse,
         pipelinesResponse,
+        deploymentsResponse,
+        awsResponse,
       ] = await Promise.all([
         getProjects(),
         getScans(),
         getVulnerabilities(),
         getPipelines(),
+        getDeployments().catch(() => ({ success: false })),
+        getAwsOverview().catch(() => ({ success: false })),
       ]);
 
       setProjects(
@@ -75,6 +83,14 @@ function Dashboard() {
           ? pipelinesResponse.pipelines
           : []
       );
+
+      if (deploymentsResponse?.success && Array.isArray(deploymentsResponse?.deployments)) {
+        setDeployments(deploymentsResponse.deployments);
+      }
+
+      if (awsResponse?.success) {
+        setAwsInfo(awsResponse);
+      }
     } catch (err) {
       console.error("Dashboard loading error:", err);
 
@@ -98,6 +114,14 @@ function Dashboard() {
   DASHBOARD CALCULATIONS
   ============================================================
   */
+
+  const runningDeployments = useMemo(() => {
+    return deployments.filter((d) => d.status === "deployed" || d.status === "running");
+  }, [deployments]);
+
+  const stoppedDeployments = useMemo(() => {
+    return deployments.filter((d) => d.status === "stopped");
+  }, [deployments]);
 
   const completedScans = useMemo(() => {
     return scans.filter(
@@ -352,6 +376,7 @@ function Dashboard() {
   /*
   ============================================================
   MAIN DASHBOARD
+
   ============================================================
   */
 
@@ -380,6 +405,15 @@ function Dashboard() {
               vulnerabilities and CI/CD pipelines
               from one place.
             </p>
+
+            <div style={{ display: "inline-flex", alignItems: "center", gap: "8px", marginTop: "10px", padding: "4px 12px", borderRadius: "16px", background: "rgba(16, 185, 129, 0.12)", border: "1px solid rgba(16, 185, 129, 0.35)", fontSize: "12px", color: "#10b981" }}>
+              <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#10b981", boxShadow: "0 0 6px #10b981" }} />
+              <strong>AWS ECS Fargate</strong>
+              <span style={{ color: "rgba(255,255,255,0.2)" }}>|</span>
+              <span>Region: {awsInfo?.region || "ap-south-1"}</span>
+              <span style={{ color: "rgba(255,255,255,0.2)" }}>|</span>
+              <span>Account: {awsInfo?.account_id || "288418346751"}</span>
+            </div>
 
           </div>
 
@@ -588,6 +622,42 @@ function Dashboard() {
             </span>
 
           </div>
+
+
+          {/* LIVE WORKLOADS (AWS DEPLOYMENTS) */}
+
+          <Link
+            to="/deployments"
+            className="dashboard-stat-card"
+          >
+            <div className="stat-card-top">
+              <span className="stat-label">
+                Live Workloads
+              </span>
+
+              <span className="stat-icon stat-icon-green" style={{ color: "#38bdf8" }}>
+                ☁
+              </span>
+            </div>
+
+            <strong className="stat-value" style={{ color: runningDeployments.length > 0 ? "#10b981" : undefined }}>
+              {runningDeployments.length}
+            </strong>
+
+            <span className="stat-description">
+              Active ECS Fargate containers
+            </span>
+
+            <div className="stat-severity-row">
+              <span style={{ fontSize: "11px", color: "#38bdf8" }}>
+                {deployments.length} total
+              </span>
+
+              <span style={{ fontSize: "11px", color: "#94a3b8" }}>
+                {stoppedDeployments.length} stopped
+              </span>
+            </div>
+          </Link>
 
         </section>
 
