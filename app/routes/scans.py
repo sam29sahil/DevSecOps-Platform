@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request
 
@@ -233,7 +233,7 @@ def run_scan():
             findings
         )
 
-        completed_at = datetime.utcnow().isoformat()
+        completed_at = datetime.now(timezone.utc).isoformat()
 
         # ----------------------------------------------------
         # UPDATE SCAN
@@ -285,7 +285,7 @@ def run_scan():
             update_scan(
                 scan_id=scan["id"],
                 status="failed",
-                completed_at=datetime.utcnow().isoformat(),
+                completed_at=datetime.now(timezone.utc).isoformat(),
             )
         except Exception:
             pass

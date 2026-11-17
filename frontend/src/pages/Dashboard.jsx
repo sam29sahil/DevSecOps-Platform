@@ -10,6 +10,7 @@ import {
   getDeployments,
   getAwsOverview,
 } from "../services/api";
+import { formatDateTime } from "../utils/time";
 
 import "./Dashboard.css";
 
@@ -278,17 +279,8 @@ function Dashboard() {
   */
 
   function formatDate(date) {
-    if (!date) {
-      return "—";
-    }
-
-    const parsed = new Date(date);
-
-    if (Number.isNaN(parsed.getTime())) {
-      return "—";
-    }
-
-    return parsed.toLocaleString();
+    if (!date) return "—";
+    return formatDateTime(date, { fallback: "—" });
   }
 
 

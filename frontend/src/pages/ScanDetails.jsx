@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-
 import { getScan } from "../services/api";
+import { formatDateTime, formatDuration } from "../utils/time";
 
 function ScanDetails() {
   const { scanId } = useParams();
@@ -149,9 +149,7 @@ function ScanDetails() {
           <span>Started</span>
 
           <strong>
-            {scan.started_at
-              ? new Date(scan.started_at).toLocaleString()
-              : "—"}
+            {formatDateTime(scan.started_at)}
           </strong>
         </div>
 
@@ -159,9 +157,15 @@ function ScanDetails() {
           <span>Completed</span>
 
           <strong>
-            {scan.completed_at
-              ? new Date(scan.completed_at).toLocaleString()
-              : "—"}
+            {formatDateTime(scan.completed_at)}
+          </strong>
+        </div>
+
+        <div>
+          <span>Duration</span>
+
+          <strong>
+            {formatDuration(scan.started_at, scan.completed_at)}
           </strong>
         </div>
 

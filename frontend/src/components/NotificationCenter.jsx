@@ -18,24 +18,8 @@ import {
   markAllNotificationsRead,
   clearAllNotifications,
 } from "../services/api";
+import { formatTimeAgo } from "../utils/time";
 import "./NotificationCenter.css";
-
-function formatTimeAgo(dateString) {
-  if (!dateString) return "";
-  try {
-    const date = new Date(dateString);
-    const now = new Date();
-    const diffSec = Math.floor((now - date) / 1000);
-    if (diffSec < 60) return "Just now";
-    const diffMin = Math.floor(diffSec / 60);
-    if (diffMin < 60) return `${diffMin}m ago`;
-    const diffHour = Math.floor(diffMin / 60);
-    if (diffHour < 24) return `${diffHour}h ago`;
-    return date.toLocaleDateString();
-  } catch {
-    return dateString;
-  }
-}
 
 function getNotificationIcon(eventType, status) {
   if (status === "error" || eventType === "deploy_failed" || eventType === "health_check_failed") {

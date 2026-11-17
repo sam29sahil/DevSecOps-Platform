@@ -10,6 +10,7 @@ import {
   runPipeline as apiRunPipeline,
   getPipelineRuns,
 } from "../services/api";
+import { formatDateTime, formatDuration } from "../utils/time";
 
 /* =========================================================
    STATUS
@@ -59,14 +60,7 @@ function normalizeStatus(status) {
 
 function formatDate(value) {
   if (!value) return "Never";
-
-  const date = new Date(value);
-
-  if (Number.isNaN(date.getTime())) {
-    return String(value);
-  }
-
-  return date.toLocaleString();
+  return formatDateTime(value, { fallback: "Never" });
 }
 
 function getRepository(pipeline) {
@@ -1191,6 +1185,7 @@ export default function Pipelines() {
                     <th>Run</th>
                     <th>Status</th>
                     <th>Started</th>
+                    <th>Duration</th>
                     <th>Live Application</th>
                     <th>Scan</th>
                     <th>Findings</th>
@@ -1218,6 +1213,13 @@ export default function Pipelines() {
                         {formatDate(
                           run.started_at ||
                             run.created_at
+                        )}
+                      </td>
+
+                      <td style={{ color: "#94a3b8", fontSize: "13px", fontVariantNumeric: "tabular-nums" }}>
+                        {formatDuration(
+                          run.started_at || run.created_at,
+                          run.completed_at
                         )}
                       </td>
 

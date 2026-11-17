@@ -502,7 +502,7 @@ DEFAULT_STAGES = [
 # ============================================================
 
 def utc_now():
-    return datetime.utcnow().isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 def safe_int(value, default=None):

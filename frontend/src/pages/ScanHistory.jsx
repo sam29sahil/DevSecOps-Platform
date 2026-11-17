@@ -13,6 +13,7 @@ import { useNavigate } from "react-router-dom";
 
 import DashboardLayout from "../components/DashboardLayout";
 import { getScans } from "../services/api";
+import { formatDateTime } from "../utils/time";
 
 import "./ScanHistory.css";
 
@@ -124,23 +125,8 @@ function ScanHistory() {
   }, [scans]);
 
   function formatDate(value) {
-    if (!value) {
-      return "—";
-    }
-
-    const date = new Date(value);
-
-    if (Number.isNaN(date.getTime())) {
-      return value;
-    }
-
-    return date.toLocaleString([], {
-      year: "numeric",
-      month: "short",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
+    if (!value) return "—";
+    return formatDateTime(value, { fallback: "—" });
   }
 
   function getStatusIcon(status) {

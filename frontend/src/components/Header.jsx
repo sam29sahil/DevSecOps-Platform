@@ -4,6 +4,7 @@ import {
   Shield,
 } from "lucide-react";
 import NotificationCenter from "./NotificationCenter";
+import RealTimeClock from "./RealTimeClock";
 
 function Header() {
   return (
@@ -47,6 +48,9 @@ function Header() {
           </span>
 
         </div>
+
+
+        <RealTimeClock />
 
 
         <NotificationCenter />

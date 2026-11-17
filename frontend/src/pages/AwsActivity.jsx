@@ -20,12 +20,12 @@ import {
   getAwsEcs,
   getAwsCloudWatch,
 } from "../services/api";
+import { formatDateTime } from "../utils/time";
 import "./AwsActivity.css";
 
 function formatDate(value) {
   if (!value) return "N/A";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "N/A" : date.toLocaleString();
+  return formatDateTime(value, { fallback: "N/A" });
 }
 
 function AwsActivity() {

@@ -1,7 +1,12 @@
 import os
 import sqlite3
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
+
+
+def utc_now():
+    """Return ISO 8601 UTC timestamp with timezone awareness."""
+    return datetime.now(timezone.utc).isoformat()
 
 
 # ============================================================
@@ -313,7 +318,7 @@ def create_project(
 
     db = get_db()
 
-    now = datetime.utcnow().isoformat()
+    now = utc_now()
 
     source_directory = (
         str(source_directory).strip()
@@ -429,7 +434,7 @@ def update_project(
 
     db = get_db()
 
-    now = datetime.utcnow().isoformat()
+    now = utc_now()
 
     source_directory = (
         str(source_directory).strip()
@@ -551,7 +556,7 @@ def create_scan(project_id):
 
     db = get_db()
 
-    now = datetime.utcnow().isoformat()
+    now = utc_now()
 
     cursor = db.execute(
         """
@@ -725,7 +730,7 @@ def create_finding(
 
     db = get_db()
 
-    now = datetime.utcnow().isoformat()
+    now = utc_now()
 
     cursor = db.execute(
         """
@@ -854,7 +859,7 @@ def create_deployment(
 ):
     """Create a new deployment record."""
     db = get_db()
-    now = datetime.utcnow().isoformat()
+    now = utc_now()
 
     if not deployment_id:
         import uuid
@@ -1012,7 +1017,7 @@ def get_latest_deployment(project_id=None):
 def update_deployment(identifier, **updates):
     """Update fields of an existing deployment."""
     db = get_db()
-    now = datetime.utcnow().isoformat()
+    now = utc_now()
     updates["updated_at"] = now
 
     fields = []
@@ -1098,7 +1103,7 @@ def create_notification(
 ):
     """Store a persistent deployment or pipeline event notification."""
     db = get_db()
-    now = datetime.utcnow().isoformat()
+    now = utc_now()
 
     cursor = db.execute(
         """

@@ -5,7 +5,7 @@ import shutil
 import subprocess
 import tempfile
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from flask import Blueprint, jsonify, request
@@ -458,7 +458,7 @@ DEFAULT_STAGES = [
 # ============================================================
 
 def utc_now():
-    return datetime.utcnow().isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 def safe_int(value, default=None):

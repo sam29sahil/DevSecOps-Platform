@@ -1,5 +1,6 @@
-﻿import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { getScans, getReport } from "../services/api";
+import { formatDateTime, formatDuration } from "../utils/time";
 import DashboardLayout from "../layouts/DashboardLayout";
 import "./Reports.css";
 
@@ -731,6 +732,20 @@ function Reports() {
                     <span>Status</span>
                     <strong className="status-completed">
                       Completed
+                    </strong>
+                  </div>
+
+                  <div>
+                    <span>Completed At</span>
+                    <strong>
+                      {formatDateTime(report.scan?.completed_at || report.scan?.created_at)}
+                    </strong>
+                  </div>
+
+                  <div>
+                    <span>Scan Duration</span>
+                    <strong>
+                      {formatDuration(report.scan?.started_at, report.scan?.completed_at)}
                     </strong>
                   </div>
 

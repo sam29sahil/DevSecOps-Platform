@@ -26,6 +26,7 @@ import {
   stopAllDeployments,
   checkDeploymentHealth,
 } from "../services/api";
+import { formatDateTime } from "../utils/time";
 import "./Deployments.css";
 
 function StatusBadge({ status }) {
@@ -364,7 +365,7 @@ export default function Deployments() {
                         <div className="card-meta-item">
                           <span className="meta-label">Timestamp</span>
                           <span className="meta-val">
-                            {dep.created_at ? new Date(dep.created_at).toLocaleString() : "—"}
+                            {formatDateTime(dep.created_at)}
                           </span>
                         </div>
                       </div>
@@ -562,7 +563,7 @@ export default function Deployments() {
                         )}
                       </td>
                       <td>
-                        {d.created_at ? new Date(d.created_at).toLocaleString() : "—"}
+                        {formatDateTime(d.created_at)}
                       </td>
                     </tr>
                   ))

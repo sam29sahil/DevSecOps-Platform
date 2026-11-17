@@ -16,12 +16,12 @@ import {
   getContainers,
   getDockerImages,
 } from "../services/api";
+import { formatDateTime } from "../utils/time";
 import "./Containers.css";
 
 function formatDate(value) {
   if (!value) return "N/A";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "N/A" : date.toLocaleString();
+  return formatDateTime(value, { fallback: "N/A" });
 }
 
 function Containers() {

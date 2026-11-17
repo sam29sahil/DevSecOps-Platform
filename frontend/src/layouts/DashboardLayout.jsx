@@ -1,5 +1,6 @@
 import { NavLink } from "react-router-dom";
 import NotificationCenter from "../components/NotificationCenter";
+import RealTimeClock from "../components/RealTimeClock";
 
 function DashboardLayout({ children }) {
   return (
@@ -152,6 +153,8 @@ function DashboardLayout({ children }) {
               />
               <kbd>Ctrl K</kbd>
             </div>
+
+            <RealTimeClock />
 
             <NotificationCenter />
 
