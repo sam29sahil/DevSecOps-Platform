@@ -24,8 +24,9 @@ def create_app():
             r"/api/*": {
                 "origins": [
                     "http://localhost:5173",
+                    "http://127.0.0.1:5173",
                     "http://localhost:3000",
-                    "https://devsecops-platform1.onrender.com",
+                    "http://127.0.0.1:3000",
                 ]
             }
         }

@@ -6,10 +6,11 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import urlsplit
 
 import requests
 from flask import Blueprint, jsonify, request
@@ -304,9 +305,11 @@ def save_pipeline_run(run):
                 quality_gate_json,
                 error,
                 app_url,
-                deployment_id
+                deployment_id,
+                github_run_id,
+                github_run_url
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run["pipeline_id"],
@@ -332,6 +335,8 @@ def save_pipeline_run(run):
                 run.get("error"),
                 run.get("app_url"),
                 run.get("deployment_id"),
+                run.get("github_run_id"),
+                run.get("github_run_url"),
             ),
         )
 
@@ -357,7 +362,9 @@ def save_pipeline_run(run):
                 quality_gate_json = ?,
                 error = ?,
                 app_url = ?,
-                deployment_id = ?
+                deployment_id = ?,
+                github_run_id = ?,
+                github_run_url = ?
             WHERE id = ?
             """,
             (
@@ -384,6 +391,8 @@ def save_pipeline_run(run):
                 run.get("error"),
                 run.get("app_url"),
                 run.get("deployment_id"),
+                run.get("github_run_id"),
+                run.get("github_run_url"),
                 run["id"],
             ),
         )
@@ -553,6 +562,534 @@ def is_valid_github_url(url):
     return True
 
 
+def apply_stage_update(
+    run_id,
+    stage_id,
+    status,
+    message="",
+    details=None,
+    error_info=None,
+):
+    """
+    Apply a stage status update to a pipeline run in SQLite.
+    Handles stage timestamps, error tracking, notifications, deployments, and terminal states.
+    Callable by GitHub Actions callback endpoint or the backend polling daemon.
+    """
+    details = details or {}
+    run = find_run(run_id)
+    if run is None:
+        return None, f"Pipeline run {run_id} not found."
+
+    pipeline = find_pipeline(run["pipeline_id"])
+
+    stage_found = False
+    for stage in run["stages"]:
+        if stage["id"] == stage_id:
+            stage_found = True
+            # Prevent regressing completed stages with running
+            if stage.get("status") in ("success", "failed", "skipped") and status == "running":
+                return run, None
+
+            stage["status"] = status
+            if message:
+                stage["message"] = message
+            if details:
+                stage["details"] = {**(stage.get("details") or {}), **details}
+            if error_info:
+                stage["error"] = error_info
+
+            if status == "running":
+                stage["started_at"] = stage.get("started_at") or utc_now()
+                stage["error"] = None
+            elif status in ("success", "failed", "skipped"):
+                if not stage.get("started_at"):
+                    stage["started_at"] = utc_now()
+                stage["completed_at"] = utc_now()
+                if stage.get("started_at") and stage.get("completed_at"):
+                    try:
+                        t0 = datetime.fromisoformat(stage["started_at"])
+                        t1 = datetime.fromisoformat(stage["completed_at"])
+                        stage["duration_ms"] = int((t1 - t0).total_seconds() * 1000)
+                    except Exception:
+                        pass
+                if status == "failed" and not stage.get("error"):
+                    stage["error"] = error_info or message or f"{stage.get('name', stage_id)} failed."
+            break
+
+    if not stage_found:
+        return None, f"Stage '{stage_id}' not found in pipeline run."
+
+    project_id = pipeline.get("project_id") if pipeline else None
+    app_name = pipeline.get("name") if pipeline else "Application"
+
+    if stage_id == "docker_build":
+        if status == "running":
+            create_notification(
+                title="Docker Build Started",
+                message=f"Building Docker image for {app_name}...",
+                event_type="docker_build",
+                status="info",
+                project_id=project_id,
+                pipeline_run_id=run_id,
+            )
+        elif status == "success":
+            if details.get("image"):
+                run["docker_image"] = details["image"]
+            create_notification(
+                title="Docker Image Built",
+                message=f"Docker container image built successfully for {app_name}.",
+                event_type="docker_built",
+                status="success",
+                project_id=project_id,
+                pipeline_run_id=run_id,
+            )
+
+    elif stage_id == "container_scan":
+        if status == "success":
+            create_notification(
+                title="Container Security Scan Passed",
+                message=f"Trivy container security check passed for {app_name}.",
+                event_type="security_completed",
+                status="success",
+                project_id=project_id,
+                pipeline_run_id=run_id,
+            )
+
+    elif stage_id == "registry_push":
+        if status == "running":
+            create_notification(
+                title="AWS ECR Push Started",
+                message=f"Pushing image to Amazon ECR for {app_name}...",
+                event_type="ecr_pushed",
+                status="info",
+                project_id=project_id,
+                pipeline_run_id=run_id,
+            )
+        elif status == "success":
+            if details.get("image"):
+                run["registry_image"] = details["image"]
+            create_notification(
+                title="Image Pushed to AWS ECR",
+                message=f"Container image successfully pushed to Amazon ECR for {app_name}.",
+                event_type="ecr_pushed",
+                status="success",
+                project_id=project_id,
+                pipeline_run_id=run_id,
+            )
+
+    elif stage_id == "deployment":
+        if status == "running":
+            create_notification(
+                title="AWS ECS Deployment Started",
+                message=f"Deploying {app_name} to AWS ECS Fargate...",
+                event_type="ecs_started",
+                status="info",
+                project_id=project_id,
+                pipeline_run_id=run_id,
+            )
+        elif status == "success":
+            run["deployment"] = "success"
+            app_url = details.get("app_url") or details.get("url") or run.get("app_url")
+            if app_url:
+                run["app_url"] = app_url
+
+            existing_deps = get_deployments(project_id=project_id) if project_id else []
+            matching_dep = next((d for d in existing_deps if d.get("pipeline_run_id") == run_id), None)
+            dep_id = None
+            if matching_dep:
+                dep_id = matching_dep["deployment_id"]
+                update_deployment(
+                    matching_dep["id"],
+                    status="deployed",
+                    health_status=details.get("health_status", "healthy"),
+                    app_url=app_url or matching_dep.get("app_url"),
+                    image_uri=details.get("image") or run.get("registry_image") or matching_dep.get("image_uri"),
+                    ecs_service=details.get("ecs_service") or matching_dep.get("ecs_service"),
+                    ecs_cluster=details.get("ecs_cluster") or matching_dep.get("ecs_cluster"),
+                    completed_at=utc_now(),
+                )
+            else:
+                dep = create_deployment(
+                    project_id=project_id,
+                    pipeline_run_id=run_id,
+                    app_name=app_name,
+                    repository_url=run.get("repository_url", ""),
+                    branch=run.get("branch", "main"),
+                    image_uri=details.get("image") or run.get("registry_image", ""),
+                    ecs_cluster=details.get("ecs_cluster", "devsecops-cluster"),
+                    ecs_service=details.get("ecs_service", ""),
+                    container_port=details.get("container_port", 5000),
+                    status="deployed",
+                    health_status=details.get("health_status", "healthy"),
+                    app_url=app_url or "",
+                )
+                dep_id = dep["deployment_id"]
+                run["deployment_id"] = dep_id
+
+            create_notification(
+                title="Application Deployed Successfully",
+                message=f"Your application '{app_name}' has been deployed successfully to AWS ECS Fargate! Live URL: {app_url or 'Available'}",
+                event_type="deployed_success",
+                status="success",
+                project_id=project_id,
+                deployment_id=dep_id,
+                pipeline_run_id=run_id,
+            )
+
+    if status == "failed":
+        run["status"] = "failed"
+        run["completed_at"] = utc_now()
+        if message and error_info and message != error_info:
+            run["error"] = f"{message} ({error_info})"
+        else:
+            run["error"] = error_info or message or f"Stage '{stage_id}' failed in GitHub Actions."
+
+        if stage_id == "deployment":
+            is_health_fail = "health" in (message + " " + (error_info or "")).lower()
+            event_type = "health_check_failed" if is_health_fail else "deploy_failed"
+            title = "Application Health Check Failed" if is_health_fail else "Deployment Failed"
+
+            existing_deps = get_deployments(project_id=project_id) if project_id else []
+            matching_dep = next((d for d in existing_deps if d.get("pipeline_run_id") == run_id), None)
+            if matching_dep:
+                update_deployment(
+                    matching_dep["id"],
+                    status="failed",
+                    health_status="unhealthy" if is_health_fail else "failed",
+                    error_message=run["error"],
+                    completed_at=utc_now(),
+                )
+
+            create_notification(
+                title=title,
+                message=f"{title} for {app_name}: {run['error']}",
+                event_type=event_type,
+                status="error",
+                project_id=project_id,
+                pipeline_run_id=run_id,
+            )
+        else:
+            create_notification(
+                title=f"Pipeline Stage Failed: {stage_id.replace('_', ' ').title()}",
+                message=f"{app_name} pipeline failed at stage '{stage_id}': {run['error']}",
+                event_type="deploy_failed",
+                status="error",
+                project_id=project_id,
+                pipeline_run_id=run_id,
+            )
+        if pipeline:
+            pipeline["status"] = "failed"
+            pipeline["last_error"] = run["error"]
+            pipeline["updated_at"] = utc_now()
+            pipeline["stages"] = run["stages"]
+            save_pipeline(pipeline)
+    else:
+        has_running_or_pending = any(
+            s.get("status") in ("running", "pending")
+            for s in run["stages"]
+        )
+        has_failed = any(
+            s.get("status") == "failed"
+            for s in run["stages"]
+        )
+
+        if not has_running_or_pending and not has_failed:
+            run["status"] = "success"
+            run["completed_at"] = utc_now()
+            run["error"] = None
+            if pipeline:
+                pipeline["status"] = "success"
+                pipeline["last_error"] = None
+                pipeline["updated_at"] = utc_now()
+                pipeline["stages"] = run["stages"]
+                save_pipeline(pipeline)
+        elif pipeline:
+            pipeline["stages"] = run["stages"]
+            pipeline["updated_at"] = utc_now()
+            save_pipeline(pipeline)
+
+    save_pipeline_run(run)
+    return run, None
+
+
+def map_step_to_stage(step_name):
+    lower = (step_name or "").lower()
+    if "stage 6" in lower or "docker build" in lower:
+        return "docker_build"
+    if "stage 7" in lower or "container security scan" in lower or "container scan" in lower:
+        return "container_scan"
+    if "stage 8" in lower or "registry push" in lower:
+        return "registry_push"
+    if "stage 9" in lower or "aws ecs" in lower or "deployment" in lower:
+        return "deployment"
+    return None
+
+
+def poll_github_workflow_run(
+    pipeline_id,
+    run_id,
+    github_repo,
+    github_token,
+    dispatch_time=None,
+    deployment_id="",
+    container_port=5000,
+    max_duration_seconds=900,
+    poll_interval=5,
+):
+    """
+    Background worker that polls GitHub Actions API for workflow run progress,
+    updates pipeline run stages in SQLite, records notifications, and discovers
+    the live AWS ECS deployment URL.
+    """
+    headers = {
+        "Authorization": f"Bearer {github_token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+    start_mono = time.time()
+    github_run_id = None
+    github_run_url = None
+
+    # Step 1: Find the GitHub Actions workflow run
+    for _ in range(12):
+        try:
+            url = f"https://api.github.com/repos/{github_repo}/actions/workflows/devsecops-pipeline.yml/runs?event=workflow_dispatch&per_page=5"
+            resp = requests.get(url, headers=headers, timeout=15)
+            if resp.status_code == 200:
+                runs_data = resp.json().get("workflow_runs", [])
+                if runs_data:
+                    candidate = runs_data[0]
+                    github_run_id = candidate["id"]
+                    github_run_url = candidate.get("html_url")
+                    break
+        except Exception:
+            pass
+        time.sleep(3)
+
+    if not github_run_id:
+        return
+
+    # Update pipeline run with discovered github_run_id and github_run_url
+    try:
+        run = find_run(run_id)
+        if run:
+            run["github_run_id"] = github_run_id
+            run["github_run_url"] = github_run_url
+            save_pipeline_run(run)
+    except Exception:
+        pass
+
+    seen_stage_statuses = {}
+
+    # Step 2: Poll run jobs and steps
+    while (time.time() - start_mono) < max_duration_seconds:
+        time.sleep(poll_interval)
+
+        try:
+            current_run = find_run(run_id)
+            if not current_run or current_run.get("status") in ("success", "failed"):
+                # Attempt to retrieve live URL if missing on success
+                if current_run and current_run.get("status") == "success" and not current_run.get("app_url"):
+                    try:
+                        aws_svc = AwsService()
+                        ip = aws_svc.get_ecs_service_public_ip(service_name=f"devsecops-srv-{pipeline_id}")
+                        if ip:
+                            live_url = f"http://{ip}:{container_port}"
+                            apply_stage_update(
+                                run_id=run_id,
+                                stage_id="deployment",
+                                status="success",
+                                message="Discovered live application URL.",
+                                details={"app_url": live_url, "health_status": "healthy"},
+                            )
+                    except Exception:
+                        pass
+                break
+
+            # Query workflow run status
+            run_resp = requests.get(
+                f"https://api.github.com/repos/{github_repo}/actions/runs/{github_run_id}",
+                headers=headers,
+                timeout=15,
+            )
+            if run_resp.status_code != 200:
+                continue
+
+            run_info = run_resp.json()
+            run_status = run_info.get("status")
+            run_conclusion = run_info.get("conclusion")
+
+            # Query jobs and steps
+            jobs_resp = requests.get(
+                f"https://api.github.com/repos/{github_repo}/actions/runs/{github_run_id}/jobs",
+                headers=headers,
+                timeout=15,
+            )
+            jobs = jobs_resp.json().get("jobs", []) if jobs_resp.status_code == 200 else []
+            job = jobs[0] if jobs else None
+
+            if job:
+                steps = job.get("steps", [])
+                for step in steps:
+                    step_name = step.get("name", "")
+                    stage_id = map_step_to_stage(step_name)
+                    if not stage_id:
+                        continue
+
+                    step_status = step.get("status")
+                    step_conclusion = step.get("conclusion")
+
+                    current_stage_status = None
+                    msg = ""
+                    details = {}
+                    error_info = None
+
+                    if step_status == "in_progress":
+                        current_stage_status = "running"
+                        msg = f"{step_name} in progress in GitHub Actions..."
+                    elif step_status == "completed":
+                        if step_conclusion == "success":
+                            current_stage_status = "success"
+                            msg = f"{step_name} completed successfully."
+                            if stage_id == "docker_build":
+                                details = {
+                                    "image": f"288418346751.dkr.ecr.ap-south-1.amazonaws.com/devsecops-platform:{pipeline_id}-{run_id}",
+                                    "tag": f"{pipeline_id}-{run_id}",
+                                }
+                            elif stage_id == "container_scan":
+                                details = {"status": "passed"}
+                            elif stage_id == "registry_push":
+                                details = {
+                                    "image": f"288418346751.dkr.ecr.ap-south-1.amazonaws.com/devsecops-platform:{pipeline_id}-{run_id}",
+                                }
+                            elif stage_id == "deployment":
+                                app_url = None
+                                try:
+                                    aws_svc = AwsService()
+                                    ip = aws_svc.get_ecs_service_public_ip(service_name=f"devsecops-srv-{pipeline_id}")
+                                    if ip:
+                                        app_url = f"http://{ip}:{container_port}"
+                                except Exception:
+                                    pass
+
+                                details = {
+                                    "app_url": app_url or "",
+                                    "ecs_service": f"devsecops-srv-{pipeline_id}",
+                                    "ecs_cluster": os.getenv("AWS_ECS_CLUSTER", "devsecops-cluster"),
+                                    "container_port": container_port,
+                                    "deployment_id": deployment_id,
+                                    "health_status": "healthy" if app_url else "unknown",
+                                }
+                        elif step_conclusion in ("failure", "cancelled"):
+                            current_stage_status = "failed"
+                            msg = f"{step_name} failed in GitHub Actions."
+                            error_info = f"{step_name} failed with status: {step_conclusion}"
+                        elif step_conclusion == "skipped":
+                            current_stage_status = "skipped"
+                            msg = f"{step_name} skipped."
+
+                    if current_stage_status and seen_stage_statuses.get(stage_id) != current_stage_status:
+                        seen_stage_statuses[stage_id] = current_stage_status
+                        apply_stage_update(
+                            run_id=run_id,
+                            stage_id=stage_id,
+                            status=current_stage_status,
+                            message=msg,
+                            details=details,
+                            error_info=error_info,
+                        )
+
+            if run_status == "completed":
+                current_run = find_run(run_id)
+                if current_run and current_run.get("status") == "running":
+                    if run_conclusion != "success":
+                        apply_stage_update(
+                            run_id=run_id,
+                            stage_id="deployment",
+                            status="failed",
+                            message=f"GitHub Actions workflow completed with conclusion: {run_conclusion}",
+                            error_info=f"GitHub Actions run {github_run_id} failed ({run_conclusion}).",
+                        )
+                break
+
+        except Exception:
+            pass
+
+
+def sync_github_workflow_run(run_id):
+    """
+    Synchronize an active pipeline run with its GitHub Actions status on demand.
+    """
+    run = find_run(run_id)
+    if not run or run.get("status") != "running":
+        return run
+
+    github_run_id = run.get("github_run_id")
+    github_token = os.getenv("GITHUB_TOKEN")
+    if not github_token:
+        return run
+
+    github_repo = os.getenv("GITHUB_REPOSITORY", "sam29sahil/DevSecOps-Platform").strip()
+    headers = {
+        "Authorization": f"Bearer {github_token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+    try:
+        # If github_run_id is not yet set, discover it
+        if not github_run_id:
+            url = f"https://api.github.com/repos/{github_repo}/actions/workflows/devsecops-pipeline.yml/runs?event=workflow_dispatch&per_page=5"
+            resp = requests.get(url, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                runs = resp.json().get("workflow_runs", [])
+                if runs:
+                    github_run_id = runs[0]["id"]
+                    run["github_run_id"] = github_run_id
+                    run["github_run_url"] = runs[0].get("html_url")
+                    save_pipeline_run(run)
+
+        if not github_run_id:
+            return run
+
+        jobs_resp = requests.get(
+            f"https://api.github.com/repos/{github_repo}/actions/runs/{github_run_id}/jobs",
+            headers=headers,
+            timeout=10,
+        )
+        if jobs_resp.status_code == 200:
+            jobs = jobs_resp.json().get("jobs", [])
+            if jobs:
+                steps = jobs[0].get("steps", [])
+                for step in steps:
+                    stage_id = map_step_to_stage(step.get("name", ""))
+                    if not stage_id:
+                        continue
+                    step_status = step.get("status")
+                    step_conclusion = step.get("conclusion")
+                    if step_status == "completed":
+                        if step_conclusion == "success":
+                            apply_stage_update(
+                                run_id=run_id,
+                                stage_id=stage_id,
+                                status="success",
+                                message=f"{step.get('name')} completed.",
+                            )
+                        elif step_conclusion in ("failure", "cancelled"):
+                            apply_stage_update(
+                                run_id=run_id,
+                                stage_id=stage_id,
+                                status="failed",
+                                message=f"{step.get('name')} failed.",
+                                error_info=f"{step.get('name')} failed in GitHub Actions.",
+                            )
+    except Exception:
+        pass
+
+    return find_run(run_id)
+
+
 def dispatch_github_workflow(
     repository_url,
     branch,
@@ -565,7 +1102,8 @@ def dispatch_github_workflow(
     deployment_id="",
 ):
     """
-    Dispatch the GitHub Actions devsecops-pipeline.yml workflow.
+    Dispatch the GitHub Actions devsecops-pipeline.yml workflow
+    and start a background thread to poll GitHub Actions status.
     """
     github_token = os.getenv("GITHUB_TOKEN")
     if not github_token:
@@ -618,6 +1156,27 @@ def dispatch_github_workflow(
             )
     except requests.RequestException as e:
         raise RuntimeError(f"Failed to reach GitHub API: {str(e)}")
+
+    dispatch_time = datetime.now(timezone.utc)
+
+    # Start background polling thread for real-time local updates
+    try:
+        poll_thread = threading.Thread(
+            target=poll_github_workflow_run,
+            kwargs={
+                "pipeline_id": pipeline_id,
+                "run_id": run_id,
+                "github_repo": github_repo,
+                "github_token": github_token,
+                "dispatch_time": dispatch_time,
+                "deployment_id": deployment_id,
+                "container_port": container_port,
+            },
+            daemon=True,
+        )
+        poll_thread.start()
+    except Exception:
+        pass
 
     return True
 
@@ -867,7 +1426,8 @@ def get_pipeline_execution_mode():
     mode = os.getenv("PIPELINE_EXECUTION_MODE")
     if mode:
         return mode.strip().lower()
-    if os.getenv("RENDER") or os.getenv("IS_RENDER") or os.getenv("RENDER_SERVICE_ID"):
+    # On local Windows laptop, default to hosted CI/CD when GITHUB_TOKEN is configured
+    if os.getenv("GITHUB_TOKEN"):
         return "hosted"
     return "local"
 
@@ -1368,47 +1928,7 @@ def scan_container_image(image):
 # ============================================================
 
 
-def deploy_render_container(image_url):
-    """
-    Deploy the container to Render using a deploy hook.
-    """
-    deploy_hook = os.getenv("RENDER_DEPLOY_HOOK")
-    
-    if not deploy_hook:
-        return {
-            "status": "skipped",
-            "message": "RENDER_DEPLOY_HOOK is not configured.",
-        }
-        
-    try:
-        import requests
 
-        parsed = urlsplit(deploy_hook)
-        query_params = parse_qsl(parsed.query, keep_blank_values=True)
-        updated_params = [(k, v) for k, v in query_params if k != "imgURL"]
-        updated_params.append(("imgURL", image_url))
-        new_query = urlencode(updated_params)
-
-        url = urlunsplit((
-            parsed.scheme,
-            parsed.netloc,
-            parsed.path,
-            new_query,
-            parsed.fragment,
-        ))
-
-        response = requests.post(url, timeout=30)
-        response.raise_for_status()
-
-        return {
-            "status": "success",
-            "message": "Triggered Render deployment successfully.",
-        }
-    except Exception as e:
-        return {
-            "status": "failed",
-            "message": f"Render deployment failed: {str(e)}",
-        }
 
 
 def push_registry_image(
@@ -2772,49 +3292,17 @@ def run_pipeline(pipeline_id):
                 run,
                 "deployment",
             )
-            
-            if run.get("registry_image"):
-                deploy_result = deploy_render_container(run["registry_image"])
-                
-                if deploy_result["status"] == "success":
-                    run["deployment"] = "success"
-                    stage_finish(
-                        run,
-                        "deployment",
-                        stage_timer,
-                        status="success",
-                        message="Container deployed to Render.",
-                        details=deploy_result,
-                    )
-                elif deploy_result["status"] == "skipped":
-                    stage_finish(
-                        run,
-                        "deployment",
-                        stage_timer,
-                        status="skipped",
-                        message=deploy_result.get("message", "Deployment skipped."),
-                        details=deploy_result,
-                    )
-                else:
-                    error_message = deploy_result.get("message", "Deployment failed.")
-                    stage_finish(
-                        run,
-                        "deployment",
-                        stage_timer,
-                        status="failed",
-                        message="Deployment failed.",
-                        details=deploy_result,
-                        error=error_message,
-                    )
-                    raise RuntimeError(error_message)
-            else:
-                stage_finish(
-                    run,
-                    "deployment",
-                    stage_timer,
-                    status="skipped",
-                    message="Deployment skipped because no registry image is available.",
-                )
+            stage_finish(
+                run,
+                "deployment",
+                stage_timer,
+                status="skipped",
+                message="Local deployment skipped. Remote AWS ECS Fargate deployment executes via GitHub Actions.",
+                details={
+                    "status": "skipped",
+                    "message": "Local deployment skipped. Remote AWS ECS Fargate deployment executes via GitHub Actions.",
+                },
+            )
         else:
             update_stage(
                 run,
@@ -3075,237 +3563,41 @@ def github_status_callback(run_id):
             "error": f"Pipeline run {run_id} not found.",
         }), 404
 
-    pipeline = find_pipeline(run["pipeline_id"])
-
-    stage_found = False
-    for stage in run["stages"]:
-        if stage["id"] == stage_id:
-            stage_found = True
-            stage["status"] = status
-            if message:
-                stage["message"] = message
-            if details:
-                stage["details"] = {**(stage.get("details") or {}), **details}
-            if error_info:
-                stage["error"] = error_info
-
-            if status == "running":
-                stage["started_at"] = stage.get("started_at") or utc_now()
-                stage["error"] = None
-            elif status in ("success", "failed", "skipped"):
-                if not stage.get("started_at"):
-                    stage["started_at"] = utc_now()
-                stage["completed_at"] = utc_now()
-                if stage.get("started_at") and stage.get("completed_at"):
-                    try:
-                        t0 = datetime.fromisoformat(stage["started_at"])
-                        t1 = datetime.fromisoformat(stage["completed_at"])
-                        stage["duration_ms"] = int((t1 - t0).total_seconds() * 1000)
-                    except Exception:
-                        pass
-                if status == "failed" and not stage.get("error"):
-                    stage["error"] = error_info or message or f"{stage.get('name', stage_id)} failed."
-            break
-
-    if not stage_found:
+    updated_run, err = apply_stage_update(
+        run_id=run_id,
+        stage_id=stage_id,
+        status=status,
+        message=message,
+        details=details,
+        error_info=error_info,
+    )
+    if err:
+        code = 404 if "not found" in err and "Pipeline run" in err else 400
         return jsonify({
             "success": False,
-            "error": f"Stage '{stage_id}' not found in pipeline run.",
-        }), 400
-
-    project_id = pipeline.get("project_id") if pipeline else None
-    app_name = pipeline.get("name") if pipeline else "Application"
-
-    if stage_id == "docker_build":
-        if status == "running":
-            create_notification(
-                title="Docker Build Started",
-                message=f"Building Docker image for {app_name}...",
-                event_type="docker_build",
-                status="info",
-                project_id=project_id,
-                pipeline_run_id=run_id,
-            )
-        elif status == "success":
-            if details.get("image"):
-                run["docker_image"] = details["image"]
-            create_notification(
-                title="Docker Image Built",
-                message=f"Docker container image built successfully for {app_name}.",
-                event_type="docker_built",
-                status="success",
-                project_id=project_id,
-                pipeline_run_id=run_id,
-            )
-
-    elif stage_id == "container_scan":
-        if status == "success":
-            create_notification(
-                title="Container Security Scan Passed",
-                message=f"Trivy container security check passed for {app_name}.",
-                event_type="security_completed",
-                status="success",
-                project_id=project_id,
-                pipeline_run_id=run_id,
-            )
-
-    elif stage_id == "registry_push":
-        if status == "running":
-            create_notification(
-                title="AWS ECR Push Started",
-                message=f"Pushing image to Amazon ECR for {app_name}...",
-                event_type="ecr_pushed",
-                status="info",
-                project_id=project_id,
-                pipeline_run_id=run_id,
-            )
-        elif status == "success":
-            if details.get("image"):
-                run["registry_image"] = details["image"]
-            create_notification(
-                title="Image Pushed to AWS ECR",
-                message=f"Container image successfully pushed to Amazon ECR for {app_name}.",
-                event_type="ecr_pushed",
-                status="success",
-                project_id=project_id,
-                pipeline_run_id=run_id,
-            )
-
-    elif stage_id == "deployment":
-        if status == "running":
-            create_notification(
-                title="AWS ECS Deployment Started",
-                message=f"Deploying {app_name} to AWS ECS Fargate...",
-                event_type="ecs_started",
-                status="info",
-                project_id=project_id,
-                pipeline_run_id=run_id,
-            )
-        elif status == "success":
-            run["deployment"] = "success"
-            app_url = details.get("app_url") or details.get("url")
-            if app_url:
-                run["app_url"] = app_url
-
-            existing_deps = get_deployments(project_id=project_id) if project_id else []
-            matching_dep = next((d for d in existing_deps if d.get("pipeline_run_id") == run_id), None)
-            dep_id = None
-            if matching_dep:
-                dep_id = matching_dep["deployment_id"]
-                update_deployment(
-                    matching_dep["id"],
-                    status="deployed",
-                    health_status=details.get("health_status", "healthy"),
-                    app_url=app_url or matching_dep.get("app_url"),
-                    image_uri=details.get("image") or run.get("registry_image") or matching_dep.get("image_uri"),
-                    ecs_service=details.get("ecs_service") or matching_dep.get("ecs_service"),
-                    ecs_cluster=details.get("ecs_cluster") or matching_dep.get("ecs_cluster"),
-                    completed_at=utc_now(),
-                )
-            else:
-                dep = create_deployment(
-                    project_id=project_id,
-                    pipeline_run_id=run_id,
-                    app_name=app_name,
-                    repository_url=run.get("repository_url", ""),
-                    branch=run.get("branch", "main"),
-                    image_uri=details.get("image") or run.get("registry_image", ""),
-                    ecs_cluster=details.get("ecs_cluster", "devsecops-cluster"),
-                    ecs_service=details.get("ecs_service", ""),
-                    container_port=details.get("container_port", 5000),
-                    status="deployed",
-                    health_status=details.get("health_status", "healthy"),
-                    app_url=app_url or "",
-                )
-                dep_id = dep["deployment_id"]
-                run["deployment_id"] = dep_id
-
-            create_notification(
-                title="Application Deployed Successfully",
-                message=f"Your application '{app_name}' has been deployed successfully to AWS ECS Fargate! Live URL: {app_url or 'Available'}",
-                event_type="deployed_success",
-                status="success",
-                project_id=project_id,
-                deployment_id=dep_id,
-                pipeline_run_id=run_id,
-            )
-
-    if status == "failed":
-        run["status"] = "failed"
-        run["completed_at"] = utc_now()
-        if message and error_info and message != error_info:
-            run["error"] = f"{message} ({error_info})"
-        else:
-            run["error"] = error_info or message or f"Stage '{stage_id}' failed in GitHub Actions."
-
-        if stage_id == "deployment":
-            is_health_fail = "health" in (message + " " + (error_info or "")).lower()
-            event_type = "health_check_failed" if is_health_fail else "deploy_failed"
-            title = "Application Health Check Failed" if is_health_fail else "Deployment Failed"
-
-            existing_deps = get_deployments(project_id=project_id) if project_id else []
-            matching_dep = next((d for d in existing_deps if d.get("pipeline_run_id") == run_id), None)
-            if matching_dep:
-                update_deployment(
-                    matching_dep["id"],
-                    status="failed",
-                    health_status="unhealthy" if is_health_fail else "failed",
-                    error_message=run["error"],
-                    completed_at=utc_now(),
-                )
-
-            create_notification(
-                title=title,
-                message=f"{title} for {app_name}: {run['error']}",
-                event_type=event_type,
-                status="error",
-                project_id=project_id,
-                pipeline_run_id=run_id,
-            )
-        else:
-            create_notification(
-                title=f"Pipeline Stage Failed: {stage_id.replace('_', ' ').title()}",
-                message=f"{app_name} pipeline failed at stage '{stage_id}': {run['error']}",
-                event_type="deploy_failed",
-                status="error",
-                project_id=project_id,
-                pipeline_run_id=run_id,
-            )
-        if pipeline:
-            pipeline["status"] = "failed"
-            pipeline["last_error"] = run["error"]
-            pipeline["updated_at"] = utc_now()
-            pipeline["stages"] = run["stages"]
-            save_pipeline(pipeline)
-    else:
-        has_running_or_pending = any(
-            s.get("status") in ("running", "pending")
-            for s in run["stages"]
-        )
-        has_failed = any(
-            s.get("status") == "failed"
-            for s in run["stages"]
-        )
-
-        if not has_running_or_pending and not has_failed:
-            run["status"] = "success"
-            run["completed_at"] = utc_now()
-            run["error"] = None
-            if pipeline:
-                pipeline["status"] = "success"
-                pipeline["last_error"] = None
-                pipeline["updated_at"] = utc_now()
-                pipeline["stages"] = run["stages"]
-                save_pipeline(pipeline)
-        elif pipeline:
-            pipeline["stages"] = run["stages"]
-            pipeline["updated_at"] = utc_now()
-            save_pipeline(pipeline)
-
-    save_pipeline_run(run)
+            "error": err,
+        }), code
 
     return jsonify({
         "success": True,
         "message": f"Stage '{stage_id}' updated to '{status}'.",
+        "run": updated_run,
+    }), 200
+
+
+@pipelines_bp.post("/runs/<int:run_id>/sync")
+def sync_pipeline_run_status(run_id):
+    """
+    On-demand synchronization of a pipeline run with GitHub Actions workflow status.
+    """
+    run = sync_github_workflow_run(run_id)
+    if not run:
+        return jsonify({
+            "success": False,
+            "error": f"Pipeline run {run_id} not found.",
+        }), 404
+
+    return jsonify({
+        "success": True,
         "run": run,
     }), 200

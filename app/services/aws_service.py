@@ -14,6 +14,7 @@ class AwsService:
         client=None,
         ecs_client=None,
         logs_client=None,
+        ec2_client=None,
         region=None,
         repository=None,
         cluster=None,
@@ -32,12 +33,19 @@ class AwsService:
         )
         self._ecs_client = ecs_client
         self._logs_client = logs_client
+        self._ec2_client = ec2_client
 
     @property
     def ecs_client(self):
         if self._ecs_client is None:
             self._ecs_client = boto3.client("ecs", region_name=self.region)
         return self._ecs_client
+
+    @property
+    def ec2_client(self):
+        if self._ec2_client is None:
+            self._ec2_client = boto3.client("ec2", region_name=self.region)
+        return self._ec2_client
 
     @property
     def logs_client(self):
@@ -235,6 +243,44 @@ class AwsService:
                 "launch_type": svc.get("launchType", "FARGATE"),
             }
         except ClientError:
+            return None
+
+    def get_ecs_service_public_ip(self, cluster_name=None, service_name=None):
+        """Retrieve the public IPv4 address associated with a running task of an ECS service."""
+        cluster = cluster_name or self.cluster
+        if not service_name:
+            return None
+        try:
+            tasks_resp = self.ecs_client.list_tasks(
+                cluster=cluster,
+                serviceName=service_name,
+                desiredStatus="RUNNING",
+            )
+            task_arns = tasks_resp.get("taskArns", [])
+            if not task_arns:
+                return None
+
+            tasks_desc = self.ecs_client.describe_tasks(
+                cluster=cluster,
+                tasks=task_arns[:5],
+            ).get("tasks", [])
+
+            for task in tasks_desc:
+                for attachment in task.get("attachments", []):
+                    for detail in attachment.get("details", []):
+                        if detail.get("name") == "networkInterfaceId":
+                            eni_id = detail.get("value")
+                            if eni_id:
+                                eni_resp = self.ec2_client.describe_network_interfaces(
+                                    NetworkInterfaceIds=[eni_id]
+                                )
+                                enis = eni_resp.get("NetworkInterfaces", [])
+                                if enis:
+                                    ip = enis[0].get("Association", {}).get("PublicIp")
+                                    if ip:
+                                        return ip
+            return None
+        except Exception:
             return None
 
     def list_ecs_clusters(self):

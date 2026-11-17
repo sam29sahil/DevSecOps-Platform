@@ -190,6 +190,10 @@ def init_db():
         db.execute("ALTER TABLE pipeline_runs ADD COLUMN app_url TEXT")
     if "deployment_id" not in pipeline_run_cols:
         db.execute("ALTER TABLE pipeline_runs ADD COLUMN deployment_id TEXT")
+    if "github_run_id" not in pipeline_run_cols:
+        db.execute("ALTER TABLE pipeline_runs ADD COLUMN github_run_id INTEGER")
+    if "github_run_url" not in pipeline_run_cols:
+        db.execute("ALTER TABLE pipeline_runs ADD COLUMN github_run_url TEXT")
 
     # Safe migrations for projects
     if "app_port" not in project_columns:

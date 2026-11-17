@@ -102,7 +102,7 @@ def test_dispatch_github_workflow_construction():
     env = {
         "GITHUB_TOKEN": "test-token-12345",
         "GITHUB_REPOSITORY": "sam29sahil/DevSecOps-Platform",
-        "GITHUB_CALLBACK_URL": "https://devsecops-platform.onrender.com",
+        "GITHUB_CALLBACK_URL": "https://custom-tunnel.example.com",
     }
     with patch.dict(os.environ, env):
         with patch("requests.post") as mock_post:
@@ -135,7 +135,7 @@ def test_dispatch_github_workflow_construction():
             assert inputs["branch"] == "develop"
             assert inputs["pipeline_id"] == "10"
             assert inputs["run_id"] == "42"
-            assert inputs["callback_url"] == "https://devsecops-platform.onrender.com"
+            assert inputs["callback_url"] == "https://custom-tunnel.example.com"
             assert inputs["docker_enabled"] == "true"
             assert inputs["registry_enabled"] == "true"
             assert inputs["deployment_enabled"] == "true"
@@ -186,7 +186,7 @@ def test_hosted_mode_does_not_call_docker(client, test_pipeline):
                                     assert data["success"] is True
                                     assert "container stages queued in GitHub Actions" in data["message"]
 
-                                    # Verify Docker CLI functions were NEVER invoked on the Render side
+                                    # Verify Docker CLI functions were NEVER invoked on local host
                                     assert mock_docker_build.called is False
                                     assert mock_container_scan.called is False
                                     assert mock_registry_push.called is False
@@ -323,7 +323,11 @@ def test_callback_updates_pipeline_run_stages(client, test_pipeline):
             json={
                 "stage": "deployment",
                 "status": "success",
-                "message": "Render deployment triggered successfully.",
+                "message": "Application deployed successfully to AWS ECS Fargate.",
+                "details": {
+                    "app_url": "http://13.235.45.67:5000",
+                    "ecs_service": f"devsecops-srv-{test_pipeline['id']}",
+                },
             },
         )
         assert res5.status_code == 200
@@ -332,6 +336,7 @@ def test_callback_updates_pipeline_run_stages(client, test_pipeline):
 
         # Entire run should now be marked terminal success
         assert run_data["status"] == "success"
+        assert run_data["app_url"] == "http://13.235.45.67:5000"
         assert pipeline_data["status"] == "success"
 
 
@@ -396,6 +401,111 @@ def test_workflow_yaml_structure():
     assert "arn:aws:iam::288418346751:role/DevSecOpsPlatform-GitHubActions" in content
     assert "288418346751.dkr.ecr.ap-south-1.amazonaws.com" in content
     assert "secrets.DEVSECOPS_CALLBACK_SECRET" in content
-    assert "secrets.RENDER_DEPLOY_HOOK" in content
+    # RENDER_DEPLOY_HOOK must be completely removed
+    assert "secrets.RENDER_DEPLOY_HOOK" not in content
+
+
+# ============================================================
+# 7. EXECUTION MODE & POLLING TESTS (NO RENDER DEPENDENCY)
+# ============================================================
+
+def test_execution_mode_no_render():
+    from app.routes.pipelines import get_pipeline_execution_mode
+
+    # Clear env
+    with patch.dict(os.environ, {}, clear=True):
+        assert get_pipeline_execution_mode() == "local"
+
+    # GITHUB_TOKEN set defaults to hosted (for laptop development)
+    with patch.dict(os.environ, {"GITHUB_TOKEN": "ghp_xyz"}, clear=True):
+        assert get_pipeline_execution_mode() == "hosted"
+
+    # Explicit PIPELINE_EXECUTION_MODE takes precedence
+    with patch.dict(os.environ, {"PIPELINE_EXECUTION_MODE": "local", "GITHUB_TOKEN": "ghp_xyz"}, clear=True):
+        assert get_pipeline_execution_mode() == "local"
+
+    # Old Render variables must NOT trigger hosted mode
+    with patch.dict(os.environ, {"RENDER": "true", "IS_RENDER": "true", "RENDER_SERVICE_ID": "srv-123"}, clear=True):
+        assert get_pipeline_execution_mode() == "local"
+
+
+def test_poll_github_workflow_run(client, test_pipeline):
+    from app.routes.pipelines import poll_github_workflow_run, save_pipeline_run
+
+    # Create run in database
+    run_resp = client.post(f"/api/pipelines/{test_pipeline['id']}/run")
+    assert run_resp.status_code == 201
+    run_id = run_resp.get_json()["run"]["id"]
+
+    mock_runs_response = Mock()
+    mock_runs_response.status_code = 200
+    mock_runs_response.json.return_value = {
+        "workflow_runs": [
+            {
+                "id": 999888,
+                "html_url": "https://github.com/sam29sahil/DevSecOps-Platform/actions/runs/999888",
+            }
+        ]
+    }
+
+    mock_run_status_response = Mock()
+    mock_run_status_response.status_code = 200
+    mock_run_status_response.json.return_value = {
+        "status": "completed",
+        "conclusion": "success",
+    }
+
+    mock_jobs_response = Mock()
+    mock_jobs_response.status_code = 200
+    mock_jobs_response.json.return_value = {
+        "jobs": [
+            {
+                "id": 111222,
+                "status": "completed",
+                "steps": [
+                    {"name": "Stage 6 - Docker Build", "status": "completed", "conclusion": "success"},
+                    {"name": "Stage 7 - Container Security Scan", "status": "completed", "conclusion": "success"},
+                    {"name": "Stage 8 - Registry Push", "status": "completed", "conclusion": "success"},
+                    {"name": "Stage 9 - AWS ECS Fargate Deployment", "status": "completed", "conclusion": "success"},
+                ],
+            }
+        ]
+    }
+
+    def mock_get(url, *args, **kwargs):
+        if "workflows/devsecops-pipeline.yml/runs" in url:
+            return mock_runs_response
+        elif "runs/999888/jobs" in url:
+            return mock_jobs_response
+        elif "runs/999888" in url:
+            return mock_run_status_response
+        return Mock(status_code=404)
+
+    with patch("requests.get", side_effect=mock_get):
+        with patch("app.services.aws_service.AwsService.get_ecs_service_public_ip", return_value="15.206.100.50"):
+            poll_github_workflow_run(
+                pipeline_id=test_pipeline["id"],
+                run_id=run_id,
+                github_repo="sam29sahil/DevSecOps-Platform",
+                github_token="fake-token",
+                container_port=5000,
+                max_duration_seconds=5,
+                poll_interval=0.1,
+            )
+
+    updated_run = get_pipeline_run(run_id)
+    assert updated_run["status"] == "success"
+    assert updated_run["github_run_id"] == 999888
+    assert updated_run["app_url"] == "http://15.206.100.50:5000"
+
+
+def test_sync_pipeline_run_endpoint(client, test_pipeline):
+    run_resp = client.post(f"/api/pipelines/{test_pipeline['id']}/run")
+    assert run_resp.status_code == 201
+    run_id = run_resp.get_json()["run"]["id"]
+
+    sync_resp = client.post(f"/api/pipelines/runs/{run_id}/sync")
+    assert sync_resp.status_code == 200
+    assert sync_resp.get_json()["success"] is True
 
 

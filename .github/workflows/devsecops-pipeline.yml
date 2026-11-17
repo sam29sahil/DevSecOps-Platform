@@ -68,7 +68,6 @@ jobs:
       OIDC_ROLE: arn:aws:iam::288418346751:role/DevSecOpsPlatform-GitHubActions
       CALLBACK_URL: ${{ inputs.callback_url }}
       CALLBACK_SECRET: ${{ secrets.DEVSECOPS_CALLBACK_SECRET || secrets.GITHUB_CALLBACK_SECRET }}
-      RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
       RUN_ID: ${{ inputs.run_id }}
       PIPELINE_ID: ${{ inputs.pipeline_id }}
       DEPLOYMENT_ID: ${{ inputs.deployment_id }}
