@@ -355,3 +355,47 @@ def test_sync_deployment_api_endpoint(client, test_project):
     data = res.get_json()
     assert data["success"] is True
     assert "deployment" in data
+
+
+def test_ecs_status_not_checked_during_early_stages(client, test_project):
+    from app.routes.deployments import sync_deployment_status
+
+    # Create a deployment in 'building' state with an ecs_service set
+    dep = create_deployment(
+        project_id=test_project["id"],
+        app_name=test_project["name"],
+        repository_url=test_project["repository_url"],
+        status="building",
+        ecs_service="devsecops-srv-early",
+    )
+
+    with patch("app.routes.deployments.AwsService") as mock_aws:
+        synced = sync_deployment_status(dep)
+        # AwsService describe_ecs_service should NOT be called for 'building' stage
+        mock_aws.assert_not_called()
+        assert synced["status"] == "building"
+
+
+def test_pending_timeout_transitions_to_failed(client, test_project):
+    from app.routes.deployments import sync_deployment_status
+
+    # Deployment created 20 seconds ago with no active running pipeline
+    old_time = "2026-11-17T10:00:00+00:00"
+    dep = create_deployment(
+        project_id=test_project["id"],
+        app_name=test_project["name"],
+        repository_url=test_project["repository_url"],
+        status="pending",
+    )
+    # Manually backdate created_at in the database
+    from app.models import get_db
+    db = get_db()
+    db.execute("UPDATE deployments SET created_at = ? WHERE deployment_id = ?", (old_time, dep["deployment_id"]))
+    db.commit()
+    db.close()
+
+    dep = get_deployment(dep["deployment_id"])
+    synced = sync_deployment_status(dep)
+    assert synced["status"] == "failed"
+    assert "timed out" in synced["error_message"].lower()
+

@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 from flask import Flask, jsonify, send_from_directory
 from flask_cors import CORS
@@ -17,6 +18,10 @@ from app.routes import (
 
 
 def create_app():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s",
+    )
     app = Flask(__name__)
     CORS(
         app,

@@ -1,9 +1,12 @@
 import json
+import logging
 import os
 from datetime import datetime, timezone
 import requests
 from flask import Blueprint, jsonify, request, g
 from botocore.exceptions import ClientError, NoCredentialsError
+
+logger = logging.getLogger("devsecops.deployments")
 
 from app.models import (
     create_deployment,
@@ -49,7 +52,7 @@ def sync_deployment_status(dep):
     Synchronize an active deployment record with real-world execution state:
     1. Associated pipeline run state & stages (from SQLite).
     2. GitHub Actions workflow runs and jobs (via GitHub API if token configured).
-    3. Real AWS ECS service and task status (via AwsService if available).
+    3. Real AWS ECS service and task status (via AwsService if available, ONLY after deployment stage).
 
     Reliable status transitions:
     PENDING -> QUEUED -> BUILDING -> SCANNING -> PUSHING -> DEPLOYING -> RUNNING / FAILED
@@ -59,6 +62,8 @@ def sync_deployment_status(dep):
 
     dep_id = dep.get("deployment_id") or dep.get("id")
     current_status = str(dep.get("status") or "").lower()
+
+    logger.debug("[DEPLOYMENT-SYNC] Evaluating sync for deployment=%s, current_status=%s", dep_id, current_status)
 
     # Terminal states do not need lifecycle transition reconciliation
     if current_status in ("deployed", "running", "failed", "stopped"):
@@ -70,7 +75,9 @@ def sync_deployment_status(dep):
     if pipeline_run_id:
         try:
             run = get_pipeline_run_record(pipeline_run_id)
-        except Exception:
+            logger.debug("[DEPLOYMENT-SYNC] Found pipeline run %s: status=%s", pipeline_run_id, run.get("status") if run else "None")
+        except Exception as e:
+            logger.warning("[DEPLOYMENT-SYNC] Failed to fetch pipeline run %s: %s", pipeline_run_id, e)
             run = None
 
     if run:
@@ -78,6 +85,7 @@ def sync_deployment_status(dep):
         gh_id = run.get("github_run_id")
         gh_url = run.get("github_run_url")
         if gh_id and not dep.get("github_run_id"):
+            logger.info("[DEPLOYMENT-SYNC] Correlating discovered GitHub run ID %s to deployment %s", gh_id, dep_id)
             update_deployment(dep_id, github_run_id=gh_id, github_run_url=gh_url)
             dep["github_run_id"] = gh_id
             dep["github_run_url"] = gh_url
@@ -87,7 +95,8 @@ def sync_deployment_status(dep):
         try:
             stages_raw = run.get("stages_json")
             stages = json.loads(stages_raw) if stages_raw else []
-        except Exception:
+        except Exception as e:
+            logger.warning("[DEPLOYMENT-SYNC] Failed parsing stages_json for run %s: %s", pipeline_run_id, e)
             stages = []
 
         stage_map = {s.get("id"): s for s in stages if isinstance(s, dict)}
@@ -95,6 +104,7 @@ def sync_deployment_status(dep):
         # If pipeline run failed
         if run_status == "failed":
             error_msg = run.get("error") or "Associated pipeline run failed."
+            logger.info("[DEPLOYMENT-SYNC] Pipeline run %s failed. Transitioning deployment %s to FAILED: %s", pipeline_run_id, dep_id, error_msg)
             updated = update_deployment(
                 dep_id,
                 status="failed",
@@ -111,6 +121,7 @@ def sync_deployment_status(dep):
 
             if stage_status == "success":
                 app_url = run.get("app_url") or dep.get("app_url") or ""
+                logger.info("[DEPLOYMENT-SYNC] Pipeline run %s succeeded. Deployment %s RUNNING with app_url=%s", pipeline_run_id, dep_id, app_url)
                 updated = update_deployment(
                     dep_id,
                     status="deployed",
@@ -130,6 +141,7 @@ def sync_deployment_status(dep):
                     )
                 else:
                     err_msg = f"Deployment skipped: {msg}"
+                logger.info("[DEPLOYMENT-SYNC] Pipeline run %s skipped deployment. Marking deployment %s FAILED: %s", pipeline_run_id, dep_id, err_msg)
                 updated = update_deployment(
                     dep_id,
                     status="failed",
@@ -141,6 +153,19 @@ def sync_deployment_status(dep):
 
             elif stage_status == "failed":
                 err_msg = dep_stage.get("error") or dep_stage.get("message") or "Deployment stage failed."
+                logger.info("[DEPLOYMENT-SYNC] Pipeline run %s deployment stage failed. Marking deployment %s FAILED: %s", pipeline_run_id, dep_id, err_msg)
+                updated = update_deployment(
+                    dep_id,
+                    status="failed",
+                    health_status="failed",
+                    error_message=err_msg,
+                    completed_at=utc_now(),
+                )
+                return updated or dep
+            else:
+                # Pipeline run completed without executing or updating the deployment stage
+                err_msg = "Deployment not executed: Associated pipeline run completed without executing the deployment stage."
+                logger.info("[DEPLOYMENT-SYNC] Pipeline run %s completed with deployment stage in state '%s'. Marking deployment %s FAILED.", pipeline_run_id, stage_status, dep_id)
                 updated = update_deployment(
                     dep_id,
                     status="failed",
@@ -171,6 +196,7 @@ def sync_deployment_status(dep):
                 new_status = "queued"
 
             if new_status != current_status:
+                logger.info("[DEPLOYMENT-SYNC] Pipeline run %s running: Transitioning deployment %s from %s to %s", pipeline_run_id, dep_id, current_status, new_status)
                 updated = update_deployment(dep_id, status=new_status)
                 return updated or dep
 
@@ -186,11 +212,13 @@ def sync_deployment_status(dep):
                 "Accept": "application/vnd.github+json",
                 "X-GitHub-Api-Version": "2022-11-28",
             }
+            logger.debug("[DEPLOYMENT-SYNC] Querying GitHub Actions API for run #%s...", gh_run_id)
             resp = requests.get(
                 f"https://api.github.com/repos/{github_repo}/actions/runs/{gh_run_id}",
                 headers=gh_headers,
                 timeout=5,
             )
+            logger.debug("[DEPLOYMENT-SYNC] GitHub Actions API response HTTP %s for run #%s", resp.status_code, gh_run_id)
             if resp.status_code == 200:
                 gh_data = resp.json()
                 gh_status = gh_data.get("status")
@@ -198,9 +226,10 @@ def sync_deployment_status(dep):
 
                 if gh_status == "completed":
                     if gh_conclusion == "success":
-                        pass  # Will verify ECS below
+                        logger.info("[DEPLOYMENT-SYNC] GitHub Actions workflow #%s completed successfully.", gh_run_id)
                     else:
                         err_msg = f"GitHub Actions workflow run #{gh_run_id} failed with conclusion: {gh_conclusion}."
+                        logger.warning("[DEPLOYMENT-SYNC] GitHub Actions workflow #%s failed: %s", gh_run_id, err_msg)
                         updated = update_deployment(
                             dep_id,
                             status="failed",
@@ -215,6 +244,7 @@ def sync_deployment_status(dep):
                         headers=gh_headers,
                         timeout=5,
                     )
+                    logger.debug("[DEPLOYMENT-SYNC] GitHub Actions jobs API response HTTP %s for run #%s", jobs_resp.status_code, gh_run_id)
                     if jobs_resp.status_code == 200:
                         jobs = jobs_resp.json().get("jobs", [])
                         if jobs:
@@ -224,15 +254,20 @@ def sync_deployment_status(dep):
                                 s_conclusion = step.get("conclusion")
                                 if s_status == "in_progress":
                                     if "docker build" in s_name:
+                                        logger.info("[DEPLOYMENT-SYNC] GitHub runner in step '%s': status -> building", step.get("name"))
                                         return update_deployment(dep_id, status="building") or dep
                                     elif "container security scan" in s_name or "trivy" in s_name:
+                                        logger.info("[DEPLOYMENT-SYNC] GitHub runner in step '%s': status -> scanning", step.get("name"))
                                         return update_deployment(dep_id, status="scanning") or dep
                                     elif "registry push" in s_name or "ecr" in s_name:
+                                        logger.info("[DEPLOYMENT-SYNC] GitHub runner in step '%s': status -> pushing", step.get("name"))
                                         return update_deployment(dep_id, status="pushing") or dep
                                     elif "deployment" in s_name or "ecs" in s_name:
+                                        logger.info("[DEPLOYMENT-SYNC] GitHub runner in step '%s': status -> deploying", step.get("name"))
                                         return update_deployment(dep_id, status="deploying") or dep
                                 elif s_conclusion in ("failure", "cancelled"):
                                     err_msg = f"GitHub Actions step '{step.get('name')}' failed ({s_conclusion})."
+                                    logger.warning("[DEPLOYMENT-SYNC] GitHub step failure: %s", err_msg)
                                     return update_deployment(
                                         dep_id,
                                         status="failed",
@@ -240,22 +275,27 @@ def sync_deployment_status(dep):
                                         error_message=err_msg,
                                         completed_at=utc_now(),
                                     ) or dep
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("[DEPLOYMENT-SYNC] Error communicating with GitHub API: %s", e)
 
-    # 3. Check ECS service status directly if ecs_service is configured
+    # 3. Check ECS service status directly ONLY AFTER deployment stage has been reached
+    current_status = str(dep.get("status") or "").lower()
     ecs_service = dep.get("ecs_service")
-    if ecs_service:
+    if current_status in ("deploying", "deployed", "running") and ecs_service:
         try:
+            logger.debug("[DEPLOYMENT-SYNC] Checking AWS ECS service status for service=%s...", ecs_service)
             aws_svc = AwsService()
             cluster = dep.get("ecs_cluster") or os.getenv("AWS_ECS_CLUSTER", "devsecops-cluster")
             svc_info = aws_svc.describe_ecs_service(cluster_name=cluster, service_name=ecs_service)
             if svc_info:
-                if svc_info.get("running_count", 0) > 0:
+                running_count = svc_info.get("running_count", 0)
+                logger.debug("[DEPLOYMENT-SYNC] ECS service %s running_count=%s, status=%s", ecs_service, running_count, svc_info.get("status"))
+                if running_count > 0:
                     ip = aws_svc.get_ecs_service_public_ip(cluster_name=cluster, service_name=ecs_service)
                     if ip:
                         app_url = f"http://{ip}:{dep.get('container_port', 5000)}"
                         health = aws_svc.verify_application_health(app_url)
+                        logger.info("[DEPLOYMENT-SYNC] Verified active ECS task for %s at %s (healthy=%s)", ecs_service, app_url, health.get("healthy"))
                         return update_deployment(
                             dep_id,
                             status="deployed",
@@ -264,6 +304,7 @@ def sync_deployment_status(dep):
                             completed_at=utc_now(),
                         ) or dep
                 elif svc_info.get("status") == "INACTIVE":
+                    logger.warning("[DEPLOYMENT-SYNC] ECS service %s is INACTIVE", ecs_service)
                     return update_deployment(
                         dep_id,
                         status="failed",
@@ -271,23 +312,27 @@ def sync_deployment_status(dep):
                         error_message="AWS ECS service is INACTIVE.",
                         completed_at=utc_now(),
                     ) or dep
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("[DEPLOYMENT-SYNC] Error describing ECS service %s: %s", ecs_service, e)
 
     # 4. Never leave deployments indefinitely in PENDING
-    # If the deployment has been pending for over 30s without an active running pipeline or workflow:
+    # If the deployment has been pending for over 15s without an active running pipeline or workflow:
+    current_status = str(dep.get("status") or "").lower()
     if current_status == "pending":
         created_at_str = dep.get("created_at")
         if created_at_str:
             created_dt = _parse_iso_utc(created_at_str)
             if created_dt:
                 age = (datetime.now(timezone.utc) - created_dt).total_seconds()
-                if age > 30 and (not run or str(run.get("status") or "").lower() != "running"):
+                is_run_active = run and str(run.get("status") or "").lower() == "running"
+                if age > 15 and not is_run_active and not dep.get("github_run_id"):
+                    err_msg = "Deployment timed out: Workflow was never dispatched or pipeline is not active."
+                    logger.warning("[DEPLOYMENT-SYNC] Deployment %s stuck in PENDING for %.1fs with no active runner. Marking FAILED.", dep_id, age)
                     return update_deployment(
                         dep_id,
                         status="failed",
                         health_status="failed",
-                        error_message="Deployment timed out: Workflow was never dispatched or pipeline is not active.",
+                        error_message=err_msg,
                         completed_at=utc_now(),
                     ) or dep
 
@@ -306,6 +351,7 @@ def list_deployments():
     current_user = getattr(g, "user", None)
     user_id = current_user.get("user_id") if current_user and current_user.get("role") != "admin" else None
 
+    logger.debug("[DEPLOYMENTS-API] GET /api/deployments called (project_id=%s, user_id=%s)", project_id, user_id)
     raw_deployments = get_deployments(project_id=project_id)
     deployments = []
     for d in raw_deployments:
@@ -320,6 +366,7 @@ def list_deployments():
             if d.get("user_id") in (user_id, "default_user", None)
         ]
 
+    logger.debug("[DEPLOYMENTS-API] Returning %d deployments", len(deployments))
     return jsonify({
         "success": True,
         "count": len(deployments),
@@ -342,8 +389,10 @@ def deployment_statistics():
 @require_auth()
 def get_single_deployment(identifier):
     """Retrieve details for a single deployment, synchronizing active state."""
+    logger.debug("[DEPLOYMENTS-API] GET /api/deployments/%s", identifier)
     deployment = get_deployment(identifier)
     if not deployment:
+        logger.warning("[DEPLOYMENTS-API] Deployment '%s' not found.", identifier)
         return jsonify({
             "success": False,
             "error": f"Deployment '{identifier}' not found.",
@@ -354,6 +403,7 @@ def get_single_deployment(identifier):
         deployment = sync_deployment_status(deployment)
 
     if not check_ownership(deployment.get("user_id")):
+        logger.warning("[DEPLOYMENTS-API] Forbidden access to deployment '%s' by user", identifier)
         return jsonify({
             "success": False,
             "error": "Forbidden: You do not have permission to view this deployment.",
@@ -369,20 +419,24 @@ def get_single_deployment(identifier):
 @require_auth()
 def sync_single_deployment_endpoint(identifier):
     """Explicitly trigger real-world synchronization of deployment status."""
+    logger.info("[DEPLOYMENTS-API] POST /api/deployments/%s/sync", identifier)
     deployment = get_deployment(identifier)
     if not deployment:
+        logger.warning("[DEPLOYMENTS-API] Deployment '%s' not found for sync.", identifier)
         return jsonify({
             "success": False,
             "error": f"Deployment '{identifier}' not found.",
         }), 404
 
     if not check_ownership(deployment.get("user_id")):
+        logger.warning("[DEPLOYMENTS-API] Forbidden sync attempt on deployment '%s'", identifier)
         return jsonify({
             "success": False,
             "error": "Forbidden: You do not have permission to sync this deployment.",
         }), 403
 
     synced = sync_deployment_status(deployment)
+    logger.info("[DEPLOYMENTS-API] Synced deployment '%s': status=%s", identifier, synced.get("status"))
     return jsonify({
         "success": True,
         "deployment": synced,
@@ -399,15 +453,24 @@ def manual_create_deployment():
     current_user = getattr(g, "user", None)
     user_id = current_user.get("user_id") if current_user else "default_user"
 
+    logger.info("[DEPLOYMENTS-API] POST /api/deployments (project_id=%s, app_name=%s)", project_id, app_name)
+
     if project_id:
         project = get_project(project_id)
         if project:
             if not check_ownership(project.get("user_id")):
+                logger.warning("[DEPLOYMENTS-API] Forbidden: User does not own project %s", project_id)
                 return jsonify({
                     "success": False,
                     "error": "Forbidden: You do not own the project associated with this deployment.",
                 }), 403
             app_name = project.get("name") or app_name
+        else:
+            logger.warning("[DEPLOYMENTS-API] Project %s not found for deployment creation", project_id)
+            return jsonify({
+                "success": False,
+                "error": f"Project {project_id} not found.",
+            }), 404
 
     dep = create_deployment(
         project_id=project_id,
@@ -428,6 +491,8 @@ def manual_create_deployment():
         app_url=data.get("app_url", ""),
         error_message=data.get("error_message", ""),
     )
+
+    logger.info("[DEPLOYMENTS-API] Created deployment %s with initial status '%s'", dep["deployment_id"], dep["status"])
 
     create_notification(
         title="Deployment Initiated",

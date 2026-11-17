@@ -1,6 +1,7 @@
 import base64
 import hmac
 import json
+import logging
 import os
 import re
 import shutil
@@ -14,6 +15,8 @@ from urllib.parse import urlsplit
 
 import requests
 from flask import Blueprint, jsonify, request
+
+logger = logging.getLogger("devsecops.pipelines")
 
 from app.models import (
     create_finding,
@@ -860,6 +863,7 @@ def poll_github_workflow_run(
     updates pipeline run stages in SQLite, records notifications, and discovers
     the live AWS ECS deployment URL.
     """
+    logger.info("[GITHUB-POLL] Starting background poller for pipeline_id=%s, run_id=%s, deployment_id=%s", pipeline_id, run_id, deployment_id)
     headers = {
         "Authorization": f"Bearer {github_token}",
         "Accept": "application/vnd.github+json",
@@ -871,22 +875,37 @@ def poll_github_workflow_run(
     github_run_url = None
 
     # Step 1: Find the GitHub Actions workflow run
-    for _ in range(12):
+    for attempt in range(1, 13):
         try:
             url = f"https://api.github.com/repos/{github_repo}/actions/workflows/devsecops-pipeline.yml/runs?event=workflow_dispatch&per_page=5"
+            logger.debug("[GITHUB-POLL] Polling for workflow run (attempt %d/12): GET %s", attempt, url)
             resp = requests.get(url, headers=headers, timeout=15)
+            logger.debug("[GITHUB-POLL] Workflow runs query returned HTTP %s", resp.status_code)
             if resp.status_code == 200:
                 runs_data = resp.json().get("workflow_runs", [])
                 if runs_data:
                     candidate = runs_data[0]
                     github_run_id = candidate["id"]
                     github_run_url = candidate.get("html_url")
+                    logger.info("[GITHUB-POLL] Correlated GitHub Actions workflow run: run_id=%s, html_url=%s for pipeline_run_id=%s", github_run_id, github_run_url, run_id)
                     break
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("[GITHUB-POLL] Error polling workflow runs: %s", e)
         time.sleep(3)
 
     if not github_run_id:
+        logger.warning("[GITHUB-POLL] Failed to find GitHub Actions workflow run after 12 attempts for run_id=%s. Marking deployment FAILED.", run_id)
+        if deployment_id:
+            try:
+                update_deployment(
+                    deployment_id,
+                    status="failed",
+                    health_status="failed",
+                    error_message="GitHub Actions workflow run could not be discovered after workflow dispatch.",
+                    completed_at=utc_now(),
+                )
+            except Exception:
+                pass
         return
 
     # Update pipeline run with discovered github_run_id and github_run_url
@@ -898,8 +917,9 @@ def poll_github_workflow_run(
             save_pipeline_run(run)
         if deployment_id:
             update_deployment(deployment_id, github_run_id=github_run_id, github_run_url=github_run_url)
-    except Exception:
-        pass
+            logger.info("[GITHUB-POLL] Persisted github_run_id=%s to deployment %s", github_run_id, deployment_id)
+    except Exception as e:
+        logger.warning("[GITHUB-POLL] Failed to save github_run_id to DB: %s", e)
 
     seen_stage_statuses = {}
 
@@ -917,6 +937,7 @@ def poll_github_workflow_run(
                         ip = aws_svc.get_ecs_service_public_ip(service_name=f"devsecops-srv-{pipeline_id}")
                         if ip:
                             live_url = f"http://{ip}:{container_port}"
+                            logger.info("[GITHUB-POLL] Discovered ECS public IP: %s -> live_url=%s", ip, live_url)
                             apply_stage_update(
                                 run_id=run_id,
                                 stage_id="deployment",
@@ -924,8 +945,8 @@ def poll_github_workflow_run(
                                 message="Discovered live application URL.",
                                 details={"app_url": live_url, "health_status": "healthy"},
                             )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning("[GITHUB-POLL] Failed resolving public IP: %s", e)
                 break
 
             # Query workflow run status
@@ -935,11 +956,13 @@ def poll_github_workflow_run(
                 timeout=15,
             )
             if run_resp.status_code != 200:
+                logger.debug("[GITHUB-POLL] Query run %s returned HTTP %s", github_run_id, run_resp.status_code)
                 continue
 
             run_info = run_resp.json()
             run_status = run_info.get("status")
             run_conclusion = run_info.get("conclusion")
+            logger.debug("[GITHUB-POLL] Run #%s status=%s, conclusion=%s", github_run_id, run_status, run_conclusion)
 
             # Query jobs and steps
             jobs_resp = requests.get(
@@ -1012,6 +1035,7 @@ def poll_github_workflow_run(
 
                     if current_stage_status and seen_stage_statuses.get(stage_id) != current_stage_status:
                         seen_stage_statuses[stage_id] = current_stage_status
+                        logger.info("[GITHUB-POLL] Step '%s' -> stage '%s' status=%s", step_name, stage_id, current_stage_status)
                         apply_stage_update(
                             run_id=run_id,
                             stage_id=stage_id,
@@ -1025,6 +1049,7 @@ def poll_github_workflow_run(
                 current_run = find_run(run_id)
                 if current_run and current_run.get("status") == "running":
                     if run_conclusion != "success":
+                        logger.warning("[GITHUB-POLL] Workflow run %s completed with conclusion: %s", github_run_id, run_conclusion)
                         apply_stage_update(
                             run_id=run_id,
                             stage_id="deployment",
@@ -1034,8 +1059,8 @@ def poll_github_workflow_run(
                         )
                 break
 
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("[GITHUB-POLL] Exception in poller loop: %s", e)
 
 
 def sync_github_workflow_run(run_id):
@@ -1070,6 +1095,8 @@ def sync_github_workflow_run(run_id):
                     run["github_run_id"] = github_run_id
                     run["github_run_url"] = runs[0].get("html_url")
                     save_pipeline_run(run)
+                    if run.get("deployment_id"):
+                        update_deployment(run["deployment_id"], github_run_id=github_run_id, github_run_url=run["github_run_url"])
 
         if not github_run_id:
             return run
@@ -1105,8 +1132,8 @@ def sync_github_workflow_run(run_id):
                                 message=f"{step.get('name')} failed.",
                                 error_info=f"{step.get('name')} failed in GitHub Actions.",
                             )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("[GITHUB-SYNC] Exception in sync_github_workflow_run: %s", e)
 
     return find_run(run_id)
 
@@ -1126,16 +1153,43 @@ def dispatch_github_workflow(
     Dispatch the GitHub Actions devsecops-pipeline.yml workflow
     and start a background thread to poll GitHub Actions status.
     """
+    logger.info("[GITHUB-DISPATCH] Initiating workflow_dispatch for pipeline_id=%s, run_id=%s, deployment_id=%s", pipeline_id, run_id, deployment_id)
     github_token = os.getenv("GITHUB_TOKEN")
     if not github_token:
-        raise RuntimeError("GitHub Actions integration is not configured.")
+        error_msg = "GitHub Actions integration is not configured. GITHUB_TOKEN is missing."
+        logger.error("[GITHUB-DISPATCH] %s", error_msg)
+        if deployment_id:
+            try:
+                update_deployment(
+                    deployment_id,
+                    status="failed",
+                    health_status="failed",
+                    error_message=error_msg,
+                    completed_at=utc_now(),
+                )
+            except Exception:
+                pass
+        raise RuntimeError(error_msg)
 
     github_repo = os.getenv(
         "GITHUB_REPOSITORY",
         "sam29sahil/DevSecOps-Platform",
     ).strip()
     if "/" not in github_repo:
-        raise RuntimeError("GITHUB_REPOSITORY must be in the format 'owner/repo'.")
+        error_msg = "GITHUB_REPOSITORY must be in the format 'owner/repo'."
+        logger.error("[GITHUB-DISPATCH] %s", error_msg)
+        if deployment_id:
+            try:
+                update_deployment(
+                    deployment_id,
+                    status="failed",
+                    health_status="failed",
+                    error_message=error_msg,
+                    completed_at=utc_now(),
+                )
+            except Exception:
+                pass
+        raise RuntimeError(error_msg)
 
     callback_url = os.getenv("GITHUB_CALLBACK_URL", "").strip().rstrip("/")
     dispatch_url = (
@@ -1164,6 +1218,7 @@ def dispatch_github_workflow(
         },
     }
 
+    logger.info("[GITHUB-DISPATCH] Dispatching to %s (branch=%s, repo=%s)", dispatch_url, branch, repository_url)
     try:
         response = requests.post(
             dispatch_url,
@@ -1171,20 +1226,46 @@ def dispatch_github_workflow(
             json=payload,
             timeout=30,
         )
+        logger.info("[GITHUB-DISPATCH] GitHub API response HTTP %s", response.status_code)
         if response.status_code not in (200, 204):
-            raise RuntimeError(
-                f"GitHub API dispatch failed with status {response.status_code}: {response.text}"
-            )
+            err_text = f"GitHub API dispatch failed with status {response.status_code}: {response.text}"
+            logger.error("[GITHUB-DISPATCH] %s", err_text)
+            if deployment_id:
+                try:
+                    update_deployment(
+                        deployment_id,
+                        status="failed",
+                        health_status="failed",
+                        error_message=err_text,
+                        completed_at=utc_now(),
+                    )
+                except Exception:
+                    pass
+            raise RuntimeError(err_text)
     except requests.RequestException as e:
-        raise RuntimeError(f"Failed to reach GitHub API: {str(e)}")
+        err_text = f"Failed to reach GitHub API: {str(e)}"
+        logger.error("[GITHUB-DISPATCH] %s", err_text)
+        if deployment_id:
+            try:
+                update_deployment(
+                    deployment_id,
+                    status="failed",
+                    health_status="failed",
+                    error_message=err_text,
+                    completed_at=utc_now(),
+                )
+            except Exception:
+                pass
+        raise RuntimeError(err_text)
 
     dispatch_time = datetime.now(timezone.utc)
 
     if deployment_id:
         try:
+            logger.info("[GITHUB-DISPATCH] Setting deployment %s status to 'queued'", deployment_id)
             update_deployment(deployment_id, status="queued")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("[GITHUB-DISPATCH] Failed updating deployment to queued: %s", e)
 
     # Start background polling thread for real-time local updates
     try:
@@ -1202,8 +1283,9 @@ def dispatch_github_workflow(
             daemon=True,
         )
         poll_thread.start()
-    except Exception:
-        pass
+        logger.info("[GITHUB-DISPATCH] Background poller thread launched for run_id=%s", run_id)
+    except Exception as e:
+        logger.warning("[GITHUB-DISPATCH] Failed launching poller thread: %s", e)
 
     return True
 
@@ -2653,6 +2735,7 @@ def run_pipeline(pipeline_id):
         )
         run["deployment_id"] = dep["deployment_id"]
         run = save_pipeline_run(run)
+        logger.info("[PIPELINE-RUN] Created deployment %s (pending) for pipeline_run_id=%s, project_id=%s", dep["deployment_id"], run["id"], project_id)
     pipeline["last_run"] = started_at
     pipeline["last_run_id"] = run["id"]
     pipeline["updated_at"] = started_at
@@ -3336,16 +3419,18 @@ def run_pipeline(pipeline_id):
                 },
             )
             if run.get("deployment_id"):
+                err_text = "Deployment not executed: AWS ECS Fargate deployment requires remote GitHub Actions runner execution. Set PIPELINE_EXECUTION_MODE=hosted and configure GITHUB_TOKEN."
+                logger.warning("[PIPELINE-RUN] Stage 9 skipped in local mode. Transitioning deployment %s to FAILED.", run["deployment_id"])
                 try:
                     update_deployment(
                         run["deployment_id"],
                         status="failed",
                         health_status="failed",
-                        error_message="Deployment not executed: AWS ECS Fargate deployment requires remote GitHub Actions runner execution. Set PIPELINE_EXECUTION_MODE=hosted and configure GITHUB_TOKEN.",
+                        error_message=err_text,
                         completed_at=utc_now(),
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.error("[PIPELINE-RUN] Failed to update deployment %s to failed: %s", run["deployment_id"], e)
         else:
             update_stage(
                 run,
@@ -3433,6 +3518,7 @@ def run_pipeline(pipeline_id):
         pipeline["updated_at"] = failed_at
         pipeline["last_error"] = error_message
 
+        logger.error("[PIPELINE-RUN] Pipeline run %s failed with exception: %s", run.get("id"), error_message, exc_info=True)
         if run.get("deployment_id"):
             try:
                 update_deployment(
@@ -3442,8 +3528,9 @@ def run_pipeline(pipeline_id):
                     error_message=f"Pipeline error: {error_message}",
                     completed_at=failed_at,
                 )
-            except Exception:
-                pass
+                logger.info("[PIPELINE-RUN] Updated deployment %s to failed following pipeline error.", run["deployment_id"])
+            except Exception as e:
+                logger.error("[PIPELINE-RUN] Failed to update deployment %s to failed: %s", run["deployment_id"], e)
 
         if scan is not None:
 
