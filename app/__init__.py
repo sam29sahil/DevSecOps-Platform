@@ -1,7 +1,23 @@
 import logging
+import os
+import sys
 from pathlib import Path
+from dotenv import load_dotenv
 from flask import Flask, jsonify, send_from_directory
 from flask_cors import CORS
+
+# Reliably load .env from workspace root if it exists (skip when running test suites)
+_is_testing = (
+    "pytest" in sys.modules
+    or "unittest" in sys.modules
+    or bool(os.getenv("PYTEST_CURRENT_TEST"))
+    or os.getenv("TESTING") == "true"
+    or os.getenv("FLASK_ENV") == "testing"
+)
+if not _is_testing:
+    _dotenv_path = Path(__file__).resolve().parent.parent / ".env"
+    if _dotenv_path.is_file():
+        load_dotenv(dotenv_path=_dotenv_path, override=False)
 
 from app.models import init_db
 from app.routes import (

@@ -374,6 +374,28 @@ def list_deployments():
     })
 
 
+@deployments_bp.get("/config")
+def deployment_configuration_status():
+    """
+    Inspect platform environment configuration for deployments.
+    Never exposes secret values.
+    """
+    token = os.getenv("GITHUB_TOKEN", "").strip()
+    execution_mode = os.getenv("PIPELINE_EXECUTION_MODE", "hosted").strip().lower()
+    return jsonify({
+        "success": True,
+        "config": {
+            "execution_mode": execution_mode,
+            "github_token_configured": bool(token),
+            "github_repository": os.getenv("GITHUB_REPOSITORY", "sam29sahil/DevSecOps-Platform").strip(),
+            "aws_region": os.getenv("AWS_REGION", "ap-south-1").strip(),
+            "container_registry_configured": bool(os.getenv("CONTAINER_REGISTRY")),
+            "ecs_cluster": os.getenv("AWS_ECS_CLUSTER", "devsecops-cluster").strip(),
+            "ready_for_hosted_deployment": bool(token and execution_mode == "hosted"),
+        }
+    })
+
+
 @deployments_bp.get("/stats")
 @require_auth()
 def deployment_statistics():

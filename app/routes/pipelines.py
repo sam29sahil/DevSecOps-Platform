@@ -2167,6 +2167,22 @@ def push_registry_image(
 
 
 # ============================================================
+@pipelines_bp.get("/github/status")
+def github_status():
+    """
+    Verify GitHub Actions credentials and permissions via GithubService.
+    Never exposes secret token values.
+    """
+    from app.services.github_service import GithubService
+    svc = GithubService()
+    result = svc.validate_authentication()
+    status_code = 200 if result.get("valid") else 400
+    return jsonify({
+        "success": result.get("valid", False),
+        "result": result,
+    }), status_code
+
+
 # GET ALL PIPELINES
 # ============================================================
 
@@ -2639,7 +2655,11 @@ def run_pipeline(pipeline_id):
     execution_mode = get_pipeline_execution_mode()
     if execution_mode == "hosted":
         if not os.getenv("GITHUB_TOKEN"):
-            error_msg = "GitHub Actions integration is not configured."
+            error_msg = (
+                "GitHub Actions integration is not configured. Missing GITHUB_TOKEN. "
+                "Please configure GITHUB_TOKEN in your .env file with 'Actions: Read and write' and 'Contents: Read' permissions."
+            )
+            logger.error("[PIPELINE-RUN] %s", error_msg)
             pipeline["status"] = "failed"
             pipeline["last_error"] = error_msg
             pipeline["updated_at"] = utc_now()
@@ -2647,21 +2667,8 @@ def run_pipeline(pipeline_id):
             return jsonify(
                 {
                     "success": False,
-                    "error": error_msg,
-                    "pipeline": pipeline,
-                }
-            ), 500
-
-        if not os.getenv("GITHUB_CALLBACK_SECRET"):
-            error_msg = "GITHUB_CALLBACK_SECRET is not configured."
-            pipeline["status"] = "failed"
-            pipeline["last_error"] = error_msg
-            pipeline["updated_at"] = utc_now()
-            pipeline = save_pipeline(pipeline)
-            return jsonify(
-                {
-                    "success": False,
-                    "error": error_msg,
+                    "error": "GitHub Actions integration is not configured.",
+                    "details": error_msg,
                     "pipeline": pipeline,
                 }
             ), 500
