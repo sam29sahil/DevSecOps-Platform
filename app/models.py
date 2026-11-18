@@ -1,3 +1,4 @@
+import json
 import os
 import sqlite3
 from pathlib import Path
@@ -1044,7 +1045,23 @@ def get_latest_deployment(project_id=None):
 
 
 def update_deployment(identifier, **updates):
-    """Update fields of an existing deployment."""
+    """Update fields of an existing deployment while preserving verified URL and health."""
+    existing = get_deployment(identifier)
+    if existing:
+        if "app_url" in updates:
+            incoming_url = str(updates.get("app_url") or "").strip()
+            existing_url = str(existing.get("app_url") or "").strip()
+            if existing_url and not incoming_url:
+                updates.pop("app_url", None)
+            else:
+                updates["app_url"] = incoming_url
+
+        if "health_status" in updates:
+            incoming_health = str(updates.get("health_status") or "").strip().lower()
+            existing_health = str(existing.get("health_status") or "").strip().lower()
+            if existing_health == "healthy" and incoming_health in ("", "unknown", "pending"):
+                updates.pop("health_status", None)
+
     db = get_db()
     now = utc_now()
     updates["updated_at"] = now
@@ -1075,6 +1092,99 @@ def update_deployment(identifier, **updates):
     db.commit()
     db.close()
     return get_deployment(identifier)
+
+
+def update_pipeline_run_deployment_info(
+    run_id,
+    app_url=None,
+    health_status=None,
+    deployment_details=None,
+    github_run_id=None,
+    github_run_url=None,
+):
+    """Keep pipeline_runs.app_url, GitHub run metadata, and deployment stage details synchronized without erasing saved values."""
+    if not run_id:
+        return None
+    try:
+        db = get_db()
+        row = db.execute("SELECT * FROM pipeline_runs WHERE id = ?", (int(run_id),)).fetchone()
+        if not row:
+            db.close()
+            return None
+
+        record = dict(row)
+        existing_url = str(record.get("app_url") or "").strip()
+        incoming_url = str(app_url or "").strip()
+        final_url = incoming_url or existing_url
+
+        stages = []
+        try:
+            stages = json.loads(record.get("stages_json") or "[]")
+        except Exception:
+            stages = []
+
+        stages_changed = False
+        if isinstance(stages, list):
+            for stage in stages:
+                if isinstance(stage, dict) and stage.get("id") == "deployment":
+                    prev_details = dict(stage.get("details") or {}) if isinstance(stage.get("details"), dict) else {}
+                    merged = dict(prev_details)
+
+                    if isinstance(deployment_details, dict):
+                        for k, v in deployment_details.items():
+                            if v is None:
+                                continue
+                            if isinstance(v, str) and not v.strip():
+                                continue
+                            if k == "health_status":
+                                prev_h = str(merged.get("health_status") or "").strip().lower()
+                                inc_h = str(v).strip().lower()
+                                if prev_h == "healthy" and inc_h in ("", "unknown", "pending"):
+                                    continue
+                            merged[k] = v.strip() if isinstance(v, str) else v
+
+                    if final_url:
+                        merged["app_url"] = final_url
+                        merged.pop("url", None)
+
+                    if health_status:
+                        prev_h = str(merged.get("health_status") or "").strip().lower()
+                        inc_h = str(health_status).strip().lower()
+                        if not (prev_h == "healthy" and inc_h in ("", "unknown", "pending")):
+                            merged["health_status"] = inc_h
+
+                    if merged != prev_details:
+                        stage["details"] = merged
+                        stages_changed = True
+                    break
+
+        update_cols = []
+        update_vals = []
+        if final_url and final_url != existing_url:
+            update_cols.append("app_url = ?")
+            update_vals.append(final_url)
+        if github_run_id and str(github_run_id) != str(record.get("github_run_id") or ""):
+            update_cols.append("github_run_id = ?")
+            update_vals.append(github_run_id)
+        if github_run_url and github_run_url != record.get("github_run_url"):
+            update_cols.append("github_run_url = ?")
+            update_vals.append(github_run_url)
+        if stages_changed:
+            update_cols.append("stages_json = ?")
+            update_vals.append(json.dumps(stages))
+
+        if update_cols:
+            update_vals.append(int(run_id))
+            db.execute(
+                f"UPDATE pipeline_runs SET {', '.join(update_cols)} WHERE id = ?",
+                update_vals,
+            )
+            db.commit()
+
+        db.close()
+        return get_pipeline_run_record(run_id)
+    except Exception:
+        return None
 
 
 def delete_deployment(identifier):

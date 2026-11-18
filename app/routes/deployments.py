@@ -22,6 +22,7 @@ from app.models import (
     clear_notifications,
     get_project,
     get_pipeline_run_record,
+    update_pipeline_run_deployment_info,
     utc_now,
 )
 from app.services.aws_service import AwsService
@@ -149,10 +150,14 @@ def sync_deployment_status(dep):
 
     logger.debug("[DEPLOYMENT-SYNC] Evaluating sync for deployment=%s, current_status=%s", dep_id, current_status)
 
-    # Failed/stopped records are terminal. A deployed/running record with no
-    # URL is not fully usable yet, so keep reconciling it against ECS.
+    # Failed/stopped records are terminal. A deployed/running record that already
+    # has a valid URL and known health status needs no further reconciliation.
+    existing_url = str(dep.get("app_url") or "").strip()
+    existing_health = str(dep.get("health_status") or "").strip().lower()
     if current_status in ("failed", "stopped") or (
-        current_status in ("deployed", "running") and dep.get("app_url")
+        current_status in ("deployed", "running")
+        and existing_url
+        and existing_health not in ("", "unknown")
     ):
         return dep
 
@@ -189,6 +194,11 @@ def sync_deployment_status(dep):
                 gh_id,
             )
             update_deployment(dep_id, github_run_id=gh_id, github_run_url=gh_url)
+            update_pipeline_run_deployment_info(
+                pipeline_run_id,
+                github_run_id=gh_id,
+                github_run_url=gh_url,
+            )
             dep["github_run_id"] = gh_id
             dep["github_run_url"] = gh_url
 
@@ -226,17 +236,34 @@ def sync_deployment_status(dep):
                 if not isinstance(stage_details, dict):
                     stage_details = {}
 
-                # The deployment success callback stores the authoritative URL
-                # in the deployment stage details. Prefer that value so a
-                # successful callback is not lost when the run-level app_url
-                # field is blank or was not synchronized.
-                app_url = (
+                # Priority order:
+                # 1. Deployment stage details (authoritative callback output)
+                # 2. Pipeline run's top-level app_url
+                # 3. Deployment record's existing app_url
+                app_url = str(
                     stage_details.get("app_url")
                     or stage_details.get("url")
                     or run.get("app_url")
                     or dep.get("app_url")
                     or ""
-                )
+                ).strip()
+
+                # 4. If still missing, recover verified ECS URL & health from GitHub Actions job logs
+                github_token = os.getenv("GITHUB_TOKEN", "").strip()
+                github_repo = os.getenv("GITHUB_REPOSITORY", "sam29sahil/DevSecOps-Platform").strip()
+                gh_run_id_for_logs = dep.get("github_run_id") or run.get("github_run_id")
+                if not app_url and github_token and gh_run_id_for_logs:
+                    try:
+                        from app.routes.pipelines import extract_deployment_details_from_github_run
+                        log_details = extract_deployment_details_from_github_run(
+                            github_repo, gh_run_id_for_logs, github_token
+                        )
+                        if isinstance(log_details, dict) and str(log_details.get("app_url") or "").strip():
+                            stage_details = {**stage_details, **log_details}
+                            app_url = str(log_details.get("app_url") or "").strip()
+                    except Exception as log_exc:
+                        logger.debug("[DEPLOYMENT-SYNC] GitHub job log URL recovery skipped: %s", log_exc)
+
                 ecs_service = (
                     dep.get("ecs_service")
                     or stage_details.get("ecs_service")
@@ -260,25 +287,46 @@ def sync_deployment_status(dep):
                 except (TypeError, ValueError):
                     container_port = 5000
 
+                from app.routes.pipelines import _resolve_health_status
+                resolved_health = _resolve_health_status(
+                    existing_health=dep.get("health_status"),
+                    incoming_health=stage_details.get("health_status"),
+                    verified_path=stage_details.get("verified_path"),
+                    has_url=bool(app_url),
+                )
+
                 if app_url:
-                    logger.info("[DEPLOYMENT-SYNC] Pipeline run %s succeeded. Deployment %s has app_url=%s", pipeline_run_id, dep_id, app_url)
-                    updated = update_deployment(
-                        dep_id,
-                        status="deployed",
-                        health_status=(
-                            stage_details.get("health_status")
-                            or ("healthy" if stage_details.get("verified_path") else "unknown")
-                        ),
+                    logger.info("[DEPLOYMENT-SYNC] Pipeline run %s succeeded. Deployment %s has app_url=%s (health=%s)", pipeline_run_id, dep_id, app_url, resolved_health)
+                    update_kwargs = {
+                        "status": "deployed",
+                        "health_status": resolved_health,
+                        "app_url": app_url,
+                        "ecs_service": ecs_service,
+                        "ecs_cluster": ecs_cluster,
+                        "container_port": container_port,
+                        "completed_at": dep.get("completed_at") or utc_now(),
+                    }
+                    if stage_details.get("image") and not dep.get("image_uri"):
+                        update_kwargs["image_uri"] = stage_details.get("image")
+                    updated = update_deployment(dep_id, **update_kwargs)
+                    update_pipeline_run_deployment_info(
+                        pipeline_run_id,
                         app_url=app_url,
-                        ecs_service=ecs_service,
-                        ecs_cluster=ecs_cluster,
-                        container_port=container_port,
-                        completed_at=utc_now(),
+                        health_status=resolved_health,
+                        deployment_details={
+                            **stage_details,
+                            "app_url": app_url,
+                            "health_status": resolved_health,
+                            "ecs_service": ecs_service,
+                            "ecs_cluster": ecs_cluster,
+                            "container_port": container_port,
+                        },
                     )
                     return updated or dep
 
                 # The workflow completed but did not send its URL callback.
-                # Persist its ECS coordinates and continue to live IP discovery.
+                # Persist its ECS coordinates without downgrading verified fields
+                # and continue to live IP discovery.
                 logger.warning(
                     "[DEPLOYMENT-SYNC] Deployment %s succeeded without app_url; "
                     "attempting ECS discovery for service=%s.",
@@ -288,15 +336,16 @@ def sync_deployment_status(dep):
                 updated = update_deployment(
                     dep_id,
                     status="deployed",
-                    health_status=stage_details.get("health_status") or "unknown",
+                    health_status=resolved_health,
                     ecs_service=ecs_service,
                     ecs_cluster=ecs_cluster,
                     container_port=container_port,
-                    completed_at=utc_now(),
+                    completed_at=dep.get("completed_at") or utc_now(),
                 )
                 dep = updated or {
                     **dep,
                     "status": "deployed",
+                    "health_status": resolved_health,
                     "ecs_service": ecs_service,
                     "ecs_cluster": ecs_cluster,
                     "container_port": container_port,
@@ -450,12 +499,13 @@ def sync_deployment_status(dep):
             logger.warning("[DEPLOYMENT-SYNC] Error communicating with GitHub API: %s", e)
 
     # 3. Check ECS service status directly ONLY AFTER deployment stage has been reached
+    #    and only when a valid live URL has not already been saved.
     current_status = str(dep.get("status") or "").lower()
     ecs_service = dep.get("ecs_service") or (
         f"devsecops-srv-{run.get('pipeline_id')}"
         if run and run.get("pipeline_id") else None
     )
-    if current_status in ("deploying", "deployed", "running") and ecs_service:
+    if current_status in ("deploying", "deployed", "running") and ecs_service and not str(dep.get("app_url") or "").strip():
         try:
             logger.debug("[DEPLOYMENT-SYNC] Checking AWS ECS service status for service=%s...", ecs_service)
             aws_svc = AwsService()
@@ -473,17 +523,32 @@ def sync_deployment_status(dep):
                             container_port = 5000
                         app_url = f"http://{ip}:{container_port}"
                         health = aws_svc.verify_application_health(app_url)
+                        health_str = "healthy" if health.get("healthy") else "unhealthy"
                         logger.info("[DEPLOYMENT-SYNC] Discovered ECS application URL for %s: %s (healthy=%s)", ecs_service, app_url, health.get("healthy"))
-                        return update_deployment(
+                        updated = update_deployment(
                             dep_id,
                             status="deployed",
-                            health_status="healthy" if health.get("healthy") else "unhealthy",
+                            health_status=health_str,
                             app_url=app_url,
                             ecs_service=ecs_service,
                             ecs_cluster=cluster,
                             container_port=container_port,
-                            completed_at=utc_now(),
-                        ) or dep
+                            completed_at=dep.get("completed_at") or utc_now(),
+                        )
+                        if pipeline_run_id:
+                            update_pipeline_run_deployment_info(
+                                pipeline_run_id,
+                                app_url=app_url,
+                                health_status=health_str,
+                                deployment_details={
+                                    "app_url": app_url,
+                                    "health_status": health_str,
+                                    "ecs_service": ecs_service,
+                                    "ecs_cluster": cluster,
+                                    "container_port": container_port,
+                                },
+                            )
+                        return updated or dep
                 elif svc_info.get("status") == "INACTIVE":
                     logger.warning("[DEPLOYMENT-SYNC] ECS service %s is INACTIVE", ecs_service)
                     return update_deployment(
@@ -537,8 +602,10 @@ def list_deployments():
     deployments = []
     for d in raw_deployments:
         status_norm = str(d.get("status") or "").lower()
+        health_norm = str(d.get("health_status") or "").strip().lower()
         if status_norm in ("pending", "queued", "building", "scanning", "pushing", "deploying") or (
-            status_norm in ("deployed", "running") and not d.get("app_url")
+            status_norm in ("deployed", "running")
+            and (not str(d.get("app_url") or "").strip() or health_norm in ("", "unknown"))
         ):
             d = sync_deployment_status(d)
         deployments.append(d)
@@ -604,8 +671,10 @@ def get_single_deployment(identifier):
         }), 404
 
     status_norm = str(deployment.get("status") or "").lower()
+    health_norm = str(deployment.get("health_status") or "").strip().lower()
     if status_norm in ("pending", "queued", "building", "scanning", "pushing", "deploying") or (
-        status_norm in ("deployed", "running") and not deployment.get("app_url")
+        status_norm in ("deployed", "running")
+        and (not str(deployment.get("app_url") or "").strip() or health_norm in ("", "unknown"))
     ):
         deployment = sync_deployment_status(deployment)
 

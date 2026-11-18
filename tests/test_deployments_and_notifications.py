@@ -793,3 +793,232 @@ def test_late_empty_poller_result_does_not_erase_callback_live_url(client, test_
     assert updated["app_url"] == live_url
     assert updated["health_status"] == "healthy"
     assert updated["container_port"] == 8000
+
+
+def test_update_deployment_preserves_saved_url_and_healthy_status(test_project):
+    """update_deployment must never clear a saved app_url or downgrade healthy to unknown."""
+    live_url = "http://13.200.15.218:8000"
+    dep = create_deployment(
+        project_id=test_project["id"],
+        app_name=test_project["name"],
+        repository_url=test_project["repository_url"],
+        status="deployed",
+        health_status="healthy",
+        app_url=live_url,
+        container_port=8000,
+    )
+
+    updated = update_deployment(
+        dep["deployment_id"],
+        app_url="",
+        health_status="unknown",
+    )
+    assert updated["app_url"] == live_url
+    assert updated["health_status"] == "healthy"
+
+    # Real failure/unhealthy transitions must still be allowed
+    unhealthy = update_deployment(dep["deployment_id"], health_status="unhealthy")
+    assert unhealthy["health_status"] == "unhealthy"
+    assert unhealthy["app_url"] == live_url
+
+
+def test_get_deployments_api_returns_saved_app_url_and_no_duplicates(client, test_project):
+    """Callback -> stale poller -> GET /api/deployments returns saved URL with no duplicates."""
+    secret = "test-cb-secret-get-api"
+    pipeline = create_pipeline_record(
+        name="API URL Persistence Pipeline",
+        description="Verify GET /api/deployments returns persisted live URL",
+        branch="main",
+        repository_url=test_project["repository_url"],
+        project_id=test_project["id"],
+        deployment_enabled=True,
+    )
+    run = save_pipeline_run({
+        "id": None,
+        "pipeline_id": pipeline["id"],
+        "pipeline_name": pipeline["name"],
+        "status": "running",
+        "started_at": "2026-11-18T16:00:50+00:00",
+        "completed_at": None,
+        "repository_url": test_project["repository_url"],
+        "branch": "main",
+        "stages": [
+            {**stage, "status": "pending", "details": {}}
+            for stage in DEFAULT_STAGES
+        ],
+    })
+    dep = create_deployment(
+        project_id=test_project["id"],
+        pipeline_run_id=run["id"],
+        app_name="My First Project",
+        repository_url=test_project["repository_url"],
+        deployment_id="deploy-api-verify-01",
+        ecs_service="devsecops-srv-200",
+        ecs_cluster="devsecops-cluster",
+        container_port=8000,
+        status="deploying",
+        health_status="unknown",
+        app_url="",
+    )
+    run["deployment_id"] = dep["deployment_id"]
+    save_pipeline_run(run)
+
+    before_count = len(get_deployments())
+    live_url = "http://13.200.15.218:8000"
+
+    with patch.dict(os.environ, {"GITHUB_CALLBACK_SECRET": secret}):
+        cb_resp = client.post(
+            f"/api/pipelines/runs/{run['id']}/github-status",
+            headers={"Authorization": f"Bearer {secret}"},
+            json={
+                "stage": "deployment",
+                "status": "success",
+                "message": "Application deployed successfully to AWS ECS Fargate.",
+                "details": {
+                    "deployment_id": dep["deployment_id"],
+                    "app_url": live_url,
+                    "ecs_service": "devsecops-srv-200",
+                    "ecs_cluster": "devsecops-cluster",
+                    "container_port": 8000,
+                    "health_status": "healthy",
+                    "verified_path": "/health",
+                },
+            },
+        )
+        assert cb_resp.status_code == 200
+        assert cb_resp.get_json()["deployment"]["app_url"] == live_url
+
+    # Simulate late stale poller update with empty URL and unknown health
+    apply_stage_update(
+        run_id=run["id"],
+        stage_id="deployment",
+        status="success",
+        message="Stage 9 completed.",
+        details={
+            "deployment_id": dep["deployment_id"],
+            "app_url": "",
+            "ecs_service": "",
+            "health_status": "unknown",
+        },
+    )
+
+    assert len(get_deployments()) == before_count
+
+    with patch("app.routes.deployments.AwsService") as mock_aws:
+        api_resp = client.get("/api/deployments")
+        assert api_resp.status_code == 200
+        payload = api_resp.get_json()
+        assert payload["success"] is True
+        record = next(d for d in payload["deployments"] if d["deployment_id"] == dep["deployment_id"])
+        assert record["status"] == "deployed"
+        assert record["health_status"] == "healthy"
+        assert record["app_url"] == live_url
+        assert record["ecs_service"] == "devsecops-srv-200"
+        assert record["container_port"] == 8000
+        mock_aws.assert_not_called()
+
+
+def test_sync_recovers_url_from_github_job_logs_without_aws_credentials(client, test_project):
+    """When callbacks cannot reach localhost and AWS creds are absent, sync recovers URL from GitHub job logs."""
+    from app.routes.deployments import sync_deployment_status
+    from app.models import get_pipeline_run_record
+
+    pipeline = create_pipeline_record(
+        name="Job Log URL Recovery Pipeline",
+        description="Recover live URL from GitHub Actions Stage 9 logs",
+        branch="main",
+        repository_url=test_project["repository_url"],
+        project_id=test_project["id"],
+        deployment_enabled=True,
+    )
+    run = save_pipeline_run({
+        "id": None,
+        "pipeline_id": pipeline["id"],
+        "pipeline_name": pipeline["name"],
+        "status": "success",
+        "started_at": "2026-11-18T16:00:50+00:00",
+        "completed_at": "2026-11-18T16:03:00+00:00",
+        "repository_url": test_project["repository_url"],
+        "branch": "main",
+        "github_run_id": 44342218813,
+        "stages": [{
+            "id": "deployment",
+            "name": "Deployment",
+            "status": "success",
+            "details": {
+                "app_url": "",
+                "ecs_service": "devsecops-srv-200",
+                "ecs_cluster": "devsecops-cluster",
+                "container_port": 8000,
+                "health_status": "unknown",
+            },
+        }],
+    })
+    dep = create_deployment(
+        project_id=test_project["id"],
+        pipeline_run_id=run["id"],
+        app_name="My First Project",
+        repository_url=test_project["repository_url"],
+        deployment_id="deploy-log-recover-01",
+        ecs_service="devsecops-srv-200",
+        ecs_cluster="devsecops-cluster",
+        container_port=8000,
+        status="deployed",
+        health_status="unknown",
+        app_url="",
+        github_run_id=44342218813,
+    )
+
+    live_url = "http://13.200.15.218:8000"
+    jobs_resp = type("Resp", (), {
+        "status_code": 200,
+        "json": lambda self: {"jobs": [{"id": 987654321}]},
+    })()
+    logs_resp = type("Resp", (), {
+        "status_code": 200,
+        "text": (
+            "2026-11-18T16:02:19Z Discovered Live Application URL: http://13.200.15.218:8000\n"
+            "2026-11-18T16:02:19Z Health check passed on http://13.200.15.218:8000/health (HTTP 200)\n"
+            '2026-11-18T16:02:19Z Deployment succeeded: {"app_url": "http://13.200.15.218:8000", '
+            '"ecs_service": "devsecops-srv-200", "ecs_cluster": "devsecops-cluster", '
+            '"container_port": 8000, "deployment_id": "deploy-log-recover-01", '
+            '"health_status": "healthy", "verified_path": "/health"}\n'
+        ),
+    })()
+
+    def fake_get(url, *args, **kwargs):
+        if url.endswith("/jobs"):
+            return jobs_resp
+        if url.endswith("/logs"):
+            return logs_resp
+        return type("Resp", (), {"status_code": 200, "json": lambda self: {"workflow_runs": []}})()
+
+    with patch.dict(os.environ, {"GITHUB_TOKEN": "test-gh-token", "GITHUB_REPOSITORY": "sam29sahil/DevSecOps-Platform"}):
+        with patch("app.routes.pipelines.requests.get", side_effect=fake_get):
+            with patch("app.routes.deployments.requests.get", side_effect=fake_get):
+                with patch("app.routes.deployments.AwsService") as mock_aws:
+                    synced = sync_deployment_status(dep)
+
+    assert synced["status"] == "deployed"
+    assert synced["app_url"] == live_url
+    assert synced["health_status"] == "healthy"
+    assert synced["container_port"] == 8000
+    assert synced["github_run_id"] == 44342218813
+    mock_aws.assert_not_called()
+
+    # Pipeline run must also be synchronized
+    synced_run = get_pipeline_run_record(run["id"])
+    assert synced_run["app_url"] == live_url
+
+
+def test_deployments_dashboard_renders_clickable_live_url_and_polls_missing_url():
+    """Verify Deployments.jsx renders clickable app_url + Open Live Application button and polls missing URLs."""
+    with open("frontend/src/pages/Deployments.jsx", "r", encoding="utf-8") as f:
+        jsx = f.read()
+
+    assert "waitingForLiveUrl" in jsx
+    assert "dep.app_url" in jsx
+    assert "Open Live Application" in jsx
+    assert "href={liveUrl}" in jsx
+    assert "live-url-link" in jsx
+

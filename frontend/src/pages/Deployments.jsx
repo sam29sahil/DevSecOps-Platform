@@ -51,6 +51,9 @@ function getStageProgressMessage(status) {
       return "Pushing verified container image to Amazon ECR...";
     case "deploying":
       return "Deploying service to AWS ECS Fargate & registering task...";
+    case "deployed":
+    case "running":
+      return "Deployment running — Retrieving live application URL...";
     case "pending":
     default:
       return "Initializing pipeline & deployment checks...";
@@ -172,7 +175,7 @@ export default function Deployments() {
       const hasActive = (deploymentsRef.current || []).some((d) => {
         const status = String(d.status || "").toLowerCase();
         const waitingForLiveUrl =
-          ["running", "deployed"].includes(status) && !d.app_url;
+          ["running", "deployed"].includes(status) && !String(d.app_url || "").trim();
         return ACTIVE_STATUSES.has(status) || waitingForLiveUrl;
       });
       if (hasActive && !isFetchingRef.current) {
@@ -375,8 +378,9 @@ export default function Deployments() {
           ) : (
             <div className="live-cards-grid">
               {deployments.map((dep) => {
+                const liveUrl = String(dep.app_url || "").trim();
                 const isDeployed =
-                  (dep.status === "deployed" || dep.status === "running") && dep.app_url;
+                  (dep.status === "deployed" || dep.status === "running") && Boolean(liveUrl);
 
                 return (
                   <div key={dep.id} className={`live-dep-card ${isDeployed ? "card-active" : ""}`}>
@@ -468,21 +472,24 @@ export default function Deployments() {
                     </div>
 
                     {/* LIVE URL BANNER */}
-                    {dep.app_url ? (
+                    {liveUrl ? (
                       <div className="live-url-box">
                         <div className="live-url-header">
                           <Radio size={14} className="live-dot" />
                           <span>Application is Live</span>
                         </div>
                         <div className="live-url-content">
-                          <input
-                            type="text"
-                            readOnly
-                            value={dep.app_url}
-                            className="live-url-input"
-                          />
                           <a
-                            href={dep.app_url}
+                            href={liveUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="live-url-input live-url-link"
+                            title={liveUrl}
+                          >
+                            {liveUrl}
+                          </a>
+                          <a
+                            href={liveUrl}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="btn btn-live"

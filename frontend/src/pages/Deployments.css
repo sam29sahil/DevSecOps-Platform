@@ -397,6 +397,20 @@
   font-size: 12px;
   padding: 6px 10px;
   width: 100%;
+  box-sizing: border-box;
+}
+
+.live-url-link {
+  display: block;
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.live-url-link:hover {
+  text-decoration: underline;
+  border-color: rgba(16, 185, 129, 0.5);
 }
 
 .btn-live {

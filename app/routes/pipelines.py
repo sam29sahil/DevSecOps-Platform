@@ -576,6 +576,132 @@ def is_valid_github_url(url):
     return True
 
 
+def _merge_stage_details(previous_details, incoming_details):
+    """
+    Merge stage details without letting empty/None values erase previously saved fields
+    or letting an unknown health status downgrade a verified healthy deployment.
+    """
+    prev = dict(previous_details or {}) if isinstance(previous_details, dict) else {}
+    inc = dict(incoming_details or {}) if isinstance(incoming_details, dict) else {}
+    merged = dict(prev)
+
+    for key, value in inc.items():
+        if value is None:
+            continue
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                continue
+            value = stripped
+
+        if key == "health_status":
+            prev_health = str(merged.get("health_status") or "").strip().lower()
+            inc_health = str(value).strip().lower()
+            if prev_health == "healthy" and inc_health in ("", "unknown", "pending"):
+                continue
+            value = inc_health
+
+        merged[key] = value
+
+    # Preserve canonical app_url whenever either dict has a non-empty URL
+    inc_url = str(inc.get("app_url") or inc.get("url") or "").strip()
+    prev_url = str(prev.get("app_url") or prev.get("url") or "").strip()
+    final_url = inc_url or prev_url
+    if final_url:
+        merged["app_url"] = final_url
+        merged.pop("url", None)
+
+    return merged
+
+
+def _resolve_health_status(existing_health, incoming_health, verified_path=None, has_url=False):
+    """
+    Determine deployment health_status without ever downgrading 'healthy' to 'unknown'.
+    """
+    existing_norm = str(existing_health or "").strip().lower()
+    incoming_norm = str(incoming_health or "").strip().lower()
+
+    if existing_norm == "healthy" and incoming_norm in ("", "unknown", "pending"):
+        return "healthy"
+    if incoming_norm in ("healthy", "unhealthy", "failed", "stopped"):
+        return incoming_norm
+    if verified_path:
+        return "healthy"
+    if existing_norm in ("healthy", "unhealthy", "failed", "stopped"):
+        return existing_norm
+    if has_url and incoming_norm in ("", "pending"):
+        return "healthy"
+    return incoming_norm or "unknown"
+
+
+def extract_deployment_details_from_github_run(github_repo, github_run_id, github_token):
+    """
+    Extract verified ECS deployment details (app_url, health_status, ecs_service,
+    ecs_cluster, container_port, image) from a completed GitHub Actions workflow
+    run's job logs when callbacks could not reach localhost and local AWS
+    credentials are not configured.
+    """
+    if not github_repo or not github_run_id or not github_token:
+        return {}
+
+    headers = {
+        "Authorization": f"Bearer {github_token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    try:
+        jobs_resp = requests.get(
+            f"https://api.github.com/repos/{github_repo}/actions/runs/{github_run_id}/jobs",
+            headers=headers,
+            timeout=10,
+        )
+        if jobs_resp.status_code != 200:
+            return {}
+
+        jobs = jobs_resp.json().get("jobs", [])
+        if not jobs:
+            return {}
+
+        extracted = {}
+        for job in jobs:
+            job_id = job.get("id")
+            if not job_id:
+                continue
+            logs_resp = requests.get(
+                f"https://api.github.com/repos/{github_repo}/actions/jobs/{job_id}/logs",
+                headers=headers,
+                timeout=15,
+            )
+            if logs_resp.status_code != 200 or not logs_resp.text:
+                continue
+
+            log_text = logs_resp.text
+            # Prefer structured JSON printed by Stage 9 after verifying HTTP health
+            for line in reversed(log_text.splitlines()):
+                for marker in ("Deployment succeeded: ", "Deployment succeeded. Details: "):
+                    if marker in line:
+                        raw_json = line.split(marker, 1)[1].strip()
+                        if raw_json.startswith("{") and raw_json.endswith("}"):
+                            try:
+                                parsed = json.loads(raw_json)
+                                if isinstance(parsed, dict) and str(parsed.get("app_url") or "").strip():
+                                    return parsed
+                            except Exception:
+                                pass
+
+            # Fallback to plain-text discovery + health confirmation lines
+            url_match = re.findall(r"Discovered Live Application URL:\s*(https?://[^\s'\"<>]+)", log_text)
+            if url_match:
+                extracted["app_url"] = url_match[-1].strip()
+            if re.search(r"Health check passed on https?://[^\s]+ \(HTTP [23]\d\d\)", log_text):
+                extracted["health_status"] = "healthy"
+            if extracted.get("app_url"):
+                return extracted
+    except Exception as exc:
+        logger.debug("[GITHUB-LOGS] Could not extract deployment details for run %s: %s", github_run_id, exc)
+    return {}
+
+
 def apply_stage_update(
     run_id,
     stage_id,
@@ -598,9 +724,11 @@ def apply_stage_update(
 
     stage_found = False
     effective_stage_details = {}
+    target_stage = None
     for stage in run["stages"]:
         if stage["id"] == stage_id:
             stage_found = True
+            target_stage = stage
             # Prevent regressing completed stages with running
             if stage.get("status") in ("success", "failed", "skipped") and status == "running":
                 return run, None
@@ -609,26 +737,7 @@ def apply_stage_update(
             if message:
                 stage["message"] = message
             if details:
-                previous_details = dict(stage.get("details") or {})
-                merged_details = {**previous_details, **details}
-
-                # The ECS status poller can report a successful deployment before
-                # it has resolved the public IP. Its empty app_url must never
-                # overwrite the real URL already delivered by the final callback.
-                incoming_url = details.get("app_url") or details.get("url")
-                previous_url = previous_details.get("app_url") or previous_details.get("url")
-                if previous_url and not incoming_url:
-                    merged_details["app_url"] = previous_url
-                    merged_details.pop("url", None)
-
-                # Likewise, a later poller's "unknown" health result must not
-                # downgrade an already verified healthy deployment.
-                previous_health = str(previous_details.get("health_status") or "").lower()
-                incoming_health = str(details.get("health_status") or "").lower()
-                if previous_health == "healthy" and incoming_health in ("", "unknown", "pending"):
-                    merged_details["health_status"] = previous_details["health_status"]
-
-                stage["details"] = merged_details
+                stage["details"] = _merge_stage_details(stage.get("details"), details)
             effective_stage_details = dict(stage.get("details") or {})
             if error_info:
                 stage["error"] = error_info
@@ -741,13 +850,12 @@ def apply_stage_update(
         elif status == "success":
             run["deployment"] = "success"
             deployment_details = effective_stage_details or details
-            app_url = (
+            app_url = str(
                 deployment_details.get("app_url")
                 or deployment_details.get("url")
                 or run.get("app_url")
-            )
-            if app_url:
-                run["app_url"] = app_url
+                or ""
+            ).strip()
 
             # GitHub Actions includes the deployment record ID that was created
             # when this pipeline was queued. Prefer that exact ID so the callback
@@ -760,7 +868,7 @@ def apply_stage_update(
             matching_dep = None
             if details_deployment_id:
                 candidate = get_deployment(details_deployment_id)
-                if candidate and candidate.get("pipeline_run_id") == run_id:
+                if candidate and candidate.get("pipeline_run_id") in (run_id, None):
                     matching_dep = candidate
 
             # Backward-compatible fallback for older workflow callbacks without
@@ -774,24 +882,53 @@ def apply_stage_update(
                     (d for d in existing_deps if d.get("pipeline_run_id") == run_id),
                     None,
                 )
+
+            existing_dep_url = str((matching_dep or {}).get("app_url") or "").strip()
+            final_app_url = app_url or existing_dep_url
+            if final_app_url:
+                run["app_url"] = final_app_url
+                if target_stage is not None:
+                    target_stage["details"] = _merge_stage_details(
+                        target_stage.get("details"),
+                        {"app_url": final_app_url},
+                    )
+                    deployment_details = dict(target_stage.get("details") or {})
+
+            final_health = _resolve_health_status(
+                existing_health=(matching_dep or {}).get("health_status"),
+                incoming_health=deployment_details.get("health_status"),
+                verified_path=deployment_details.get("verified_path"),
+                has_url=bool(final_app_url),
+            )
+            if target_stage is not None and final_health:
+                target_stage["details"] = _merge_stage_details(
+                    target_stage.get("details"),
+                    {"health_status": final_health},
+                )
+                deployment_details = dict(target_stage.get("details") or {})
+
             dep_id = None
             if matching_dep:
                 dep_id = matching_dep["deployment_id"]
-                update_deployment(
-                    matching_dep["id"],
-                    status="deployed",
-                    health_status=(
-                        deployment_details.get("health_status")
-                        or matching_dep.get("health_status")
-                        or "healthy"
+                run["deployment_id"] = dep_id
+                update_kwargs = {
+                    "status": "deployed",
+                    "health_status": final_health,
+                    "image_uri": (
+                        deployment_details.get("image")
+                        or run.get("registry_image")
+                        or matching_dep.get("image_uri")
                     ),
-                    app_url=app_url or matching_dep.get("app_url"),
-                    image_uri=deployment_details.get("image") or run.get("registry_image") or matching_dep.get("image_uri"),
-                    ecs_service=deployment_details.get("ecs_service") or matching_dep.get("ecs_service"),
-                    ecs_cluster=deployment_details.get("ecs_cluster") or matching_dep.get("ecs_cluster"),
-                    container_port=deployment_details.get("container_port") or matching_dep.get("container_port") or 5000,
-                    completed_at=utc_now(),
-                )
+                    "ecs_service": deployment_details.get("ecs_service") or matching_dep.get("ecs_service"),
+                    "ecs_cluster": deployment_details.get("ecs_cluster") or matching_dep.get("ecs_cluster"),
+                    "container_port": deployment_details.get("container_port") or matching_dep.get("container_port") or 5000,
+                    "completed_at": matching_dep.get("completed_at") or utc_now(),
+                }
+                if final_app_url:
+                    update_kwargs["app_url"] = final_app_url
+                if matching_dep.get("pipeline_run_id") is None:
+                    update_kwargs["pipeline_run_id"] = run_id
+                update_deployment(matching_dep["id"], **update_kwargs)
             else:
                 dep = create_deployment(
                     project_id=project_id,
@@ -799,21 +936,21 @@ def apply_stage_update(
                     app_name=app_name,
                     repository_url=run.get("repository_url", ""),
                     branch=run.get("branch", "main"),
-                    image_uri=details.get("image") or run.get("registry_image", ""),
+                    image_uri=deployment_details.get("image") or run.get("registry_image", ""),
                     deployment_id=details_deployment_id or None,
                     ecs_cluster=deployment_details.get("ecs_cluster", "devsecops-cluster"),
                     ecs_service=deployment_details.get("ecs_service", ""),
                     container_port=deployment_details.get("container_port", 5000),
                     status="deployed",
-                    health_status=deployment_details.get("health_status", "healthy"),
-                    app_url=app_url or "",
+                    health_status=final_health,
+                    app_url=final_app_url,
                 )
                 dep_id = dep["deployment_id"]
                 run["deployment_id"] = dep_id
 
             create_notification(
                 title="Application Deployed Successfully",
-                message=f"Your application '{app_name}' has been deployed successfully to AWS ECS Fargate! Live URL: {app_url or 'Available'}",
+                message=f"Your application '{app_name}' has been deployed successfully to AWS ECS Fargate! Live URL: {final_app_url or 'Available'}",
                 event_type="deployed_success",
                 status="success",
                 project_id=project_id,
@@ -1012,28 +1149,54 @@ def poll_github_workflow_run(
             current_run = find_run(run_id)
             if not current_run or current_run.get("status") in ("success", "failed"):
                 # Attempt to retrieve live URL if missing on success
-                if current_run and current_run.get("status") == "success" and not current_run.get("app_url"):
-                    try:
-                        aws_svc = AwsService()
-                        ip = aws_svc.get_ecs_service_public_ip(service_name=f"devsecops-srv-{pipeline_id}")
-                        if ip:
-                            live_url = f"http://{ip}:{container_port}"
-                            logger.info("[GITHUB-POLL] Discovered ECS public IP: %s -> live_url=%s", ip, live_url)
-                            apply_stage_update(
-                                run_id=run_id,
-                                stage_id="deployment",
-                                status="success",
-                                message="Discovered live application URL.",
-                                details={
-                                    "app_url": live_url,
+                if current_run and current_run.get("status") == "success" and not str(current_run.get("app_url") or "").strip():
+                    recovered_details = {}
+                    # 1. Check deployment stage details already persisted on the run
+                    dep_stage = next(
+                        (s for s in (current_run.get("stages") or []) if isinstance(s, dict) and s.get("id") == "deployment"),
+                        {},
+                    )
+                    stage_det = dep_stage.get("details") if isinstance(dep_stage.get("details"), dict) else {}
+                    if str(stage_det.get("app_url") or stage_det.get("url") or "").strip():
+                        recovered_details = dict(stage_det)
+
+                    # 2. Extract verified URL/health from GitHub Actions job logs
+                    if not str(recovered_details.get("app_url") or "").strip():
+                        recovered_details = extract_deployment_details_from_github_run(
+                            github_repo, github_run_id, github_token
+                        )
+
+                    # 3. Fallback to AWS ECS public IP discovery only if URL is still missing
+                    if not str(recovered_details.get("app_url") or "").strip():
+                        try:
+                            aws_svc = AwsService()
+                            ip = aws_svc.get_ecs_service_public_ip(service_name=f"devsecops-srv-{pipeline_id}")
+                            if ip:
+                                recovered_details = {
+                                    "app_url": f"http://{ip}:{container_port}",
                                     "health_status": "healthy",
                                     "ecs_service": f"devsecops-srv-{pipeline_id}",
                                     "ecs_cluster": os.getenv("AWS_ECS_CLUSTER", "devsecops-cluster"),
                                     "container_port": container_port,
-                                },
-                            )
-                    except Exception as e:
-                        logger.warning("[GITHUB-POLL] Failed resolving public IP: %s", e)
+                                }
+                        except Exception as e:
+                            logger.warning("[GITHUB-POLL] Failed resolving public IP: %s", e)
+
+                    if str(recovered_details.get("app_url") or "").strip():
+                        if deployment_id and not recovered_details.get("deployment_id"):
+                            recovered_details["deployment_id"] = deployment_id
+                        logger.info(
+                            "[GITHUB-POLL] Recovered live_url=%s for run_id=%s",
+                            recovered_details.get("app_url"),
+                            run_id,
+                        )
+                        apply_stage_update(
+                            run_id=run_id,
+                            stage_id="deployment",
+                            status="success",
+                            message="Discovered live application URL.",
+                            details=recovered_details,
+                        )
                 break
 
             # Query workflow run status
@@ -1095,23 +1258,54 @@ def poll_github_workflow_run(
                                     "image": f"288418346751.dkr.ecr.ap-south-1.amazonaws.com/devsecops-platform:{pipeline_id}-{run_id}",
                                 }
                             elif stage_id == "deployment":
-                                app_url = None
-                                try:
-                                    aws_svc = AwsService()
-                                    ip = aws_svc.get_ecs_service_public_ip(service_name=f"devsecops-srv-{pipeline_id}")
-                                    if ip:
-                                        app_url = f"http://{ip}:{container_port}"
-                                except Exception:
-                                    pass
+                                # Check if the final callback already persisted a valid URL/health
+                                existing_dep = get_deployment(deployment_id) if deployment_id else None
+                                existing_stage = next(
+                                    (s for s in (current_run.get("stages") or []) if isinstance(s, dict) and s.get("id") == "deployment"),
+                                    {},
+                                )
+                                existing_stage_det = (
+                                    existing_stage.get("details")
+                                    if isinstance(existing_stage.get("details"), dict)
+                                    else {}
+                                )
+                                app_url = str(
+                                    existing_stage_det.get("app_url")
+                                    or existing_stage_det.get("url")
+                                    or current_run.get("app_url")
+                                    or (existing_dep or {}).get("app_url")
+                                    or ""
+                                ).strip()
+                                log_details = {}
+
+                                if not app_url:
+                                    log_details = extract_deployment_details_from_github_run(
+                                        github_repo, github_run_id, github_token
+                                    )
+                                    app_url = str(log_details.get("app_url") or "").strip()
+
+                                if not app_url:
+                                    try:
+                                        aws_svc = AwsService()
+                                        ip = aws_svc.get_ecs_service_public_ip(service_name=f"devsecops-srv-{pipeline_id}")
+                                        if ip:
+                                            app_url = f"http://{ip}:{container_port}"
+                                    except Exception:
+                                        pass
 
                                 details = {
-                                    "app_url": app_url or "",
-                                    "ecs_service": f"devsecops-srv-{pipeline_id}",
-                                    "ecs_cluster": os.getenv("AWS_ECS_CLUSTER", "devsecops-cluster"),
-                                    "container_port": container_port,
+                                    "ecs_service": log_details.get("ecs_service") or f"devsecops-srv-{pipeline_id}",
+                                    "ecs_cluster": log_details.get("ecs_cluster") or os.getenv("AWS_ECS_CLUSTER", "devsecops-cluster"),
+                                    "container_port": log_details.get("container_port") or container_port,
                                     "deployment_id": deployment_id,
-                                    "health_status": "healthy" if app_url else "unknown",
                                 }
+                                if log_details.get("image"):
+                                    details["image"] = log_details["image"]
+                                if log_details.get("verified_path"):
+                                    details["verified_path"] = log_details["verified_path"]
+                                if app_url:
+                                    details["app_url"] = app_url
+                                    details["health_status"] = log_details.get("health_status") or "healthy"
                         elif step_conclusion in ("failure", "cancelled"):
                             current_stage_status = "failed"
                             msg = f"{step_name} failed in GitHub Actions."
