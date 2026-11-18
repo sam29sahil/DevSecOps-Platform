@@ -597,6 +597,7 @@ def apply_stage_update(
     pipeline = find_pipeline(run["pipeline_id"])
 
     stage_found = False
+    effective_stage_details = {}
     for stage in run["stages"]:
         if stage["id"] == stage_id:
             stage_found = True
@@ -608,7 +609,27 @@ def apply_stage_update(
             if message:
                 stage["message"] = message
             if details:
-                stage["details"] = {**(stage.get("details") or {}), **details}
+                previous_details = dict(stage.get("details") or {})
+                merged_details = {**previous_details, **details}
+
+                # The ECS status poller can report a successful deployment before
+                # it has resolved the public IP. Its empty app_url must never
+                # overwrite the real URL already delivered by the final callback.
+                incoming_url = details.get("app_url") or details.get("url")
+                previous_url = previous_details.get("app_url") or previous_details.get("url")
+                if previous_url and not incoming_url:
+                    merged_details["app_url"] = previous_url
+                    merged_details.pop("url", None)
+
+                # Likewise, a later poller's "unknown" health result must not
+                # downgrade an already verified healthy deployment.
+                previous_health = str(previous_details.get("health_status") or "").lower()
+                incoming_health = str(details.get("health_status") or "").lower()
+                if previous_health == "healthy" and incoming_health in ("", "unknown", "pending"):
+                    merged_details["health_status"] = previous_details["health_status"]
+
+                stage["details"] = merged_details
+            effective_stage_details = dict(stage.get("details") or {})
             if error_info:
                 stage["error"] = error_info
 
@@ -719,7 +740,12 @@ def apply_stage_update(
             )
         elif status == "success":
             run["deployment"] = "success"
-            app_url = details.get("app_url") or details.get("url") or run.get("app_url")
+            deployment_details = effective_stage_details or details
+            app_url = (
+                deployment_details.get("app_url")
+                or deployment_details.get("url")
+                or run.get("app_url")
+            )
             if app_url:
                 run["app_url"] = app_url
 
@@ -727,7 +753,10 @@ def apply_stage_update(
             # when this pipeline was queued. Prefer that exact ID so the callback
             # updates the visible deployment even when its pipeline has no
             # project_id association.
-            details_deployment_id = details.get("deployment_id") or run.get("deployment_id")
+            details_deployment_id = (
+                deployment_details.get("deployment_id")
+                or run.get("deployment_id")
+            )
             matching_dep = None
             if details_deployment_id:
                 candidate = get_deployment(details_deployment_id)
@@ -751,12 +780,16 @@ def apply_stage_update(
                 update_deployment(
                     matching_dep["id"],
                     status="deployed",
-                    health_status=details.get("health_status", "healthy"),
+                    health_status=(
+                        deployment_details.get("health_status")
+                        or matching_dep.get("health_status")
+                        or "healthy"
+                    ),
                     app_url=app_url or matching_dep.get("app_url"),
-                    image_uri=details.get("image") or run.get("registry_image") or matching_dep.get("image_uri"),
-                    ecs_service=details.get("ecs_service") or matching_dep.get("ecs_service"),
-                    ecs_cluster=details.get("ecs_cluster") or matching_dep.get("ecs_cluster"),
-                    container_port=details.get("container_port") or matching_dep.get("container_port") or 5000,
+                    image_uri=deployment_details.get("image") or run.get("registry_image") or matching_dep.get("image_uri"),
+                    ecs_service=deployment_details.get("ecs_service") or matching_dep.get("ecs_service"),
+                    ecs_cluster=deployment_details.get("ecs_cluster") or matching_dep.get("ecs_cluster"),
+                    container_port=deployment_details.get("container_port") or matching_dep.get("container_port") or 5000,
                     completed_at=utc_now(),
                 )
             else:
@@ -768,11 +801,11 @@ def apply_stage_update(
                     branch=run.get("branch", "main"),
                     image_uri=details.get("image") or run.get("registry_image", ""),
                     deployment_id=details_deployment_id or None,
-                    ecs_cluster=details.get("ecs_cluster", "devsecops-cluster"),
-                    ecs_service=details.get("ecs_service", ""),
-                    container_port=details.get("container_port", 5000),
+                    ecs_cluster=deployment_details.get("ecs_cluster", "devsecops-cluster"),
+                    ecs_service=deployment_details.get("ecs_service", ""),
+                    container_port=deployment_details.get("container_port", 5000),
                     status="deployed",
-                    health_status=details.get("health_status", "healthy"),
+                    health_status=deployment_details.get("health_status", "healthy"),
                     app_url=app_url or "",
                 )
                 dep_id = dep["deployment_id"]

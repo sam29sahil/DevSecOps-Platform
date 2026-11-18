@@ -16,7 +16,12 @@ from app.models import (
     mark_notification_read,
     clear_notifications,
 )
-from app.routes.pipelines import create_pipeline_record, save_pipeline_run, DEFAULT_STAGES
+from app.routes.pipelines import (
+    create_pipeline_record,
+    save_pipeline_run,
+    DEFAULT_STAGES,
+    apply_stage_update,
+)
 
 
 @pytest.fixture
@@ -704,3 +709,83 @@ def test_sync_uses_live_url_saved_in_deployment_stage_details(client, test_proje
     assert synced["health_status"] == "healthy"
     assert synced["container_port"] == 8000
     mock_aws.assert_not_called()
+
+
+
+def test_late_empty_poller_result_does_not_erase_callback_live_url(client, test_project):
+    """A poller's empty URL/unknown health must not overwrite the final ECS callback."""
+    pipeline = create_pipeline_record(
+        name="Preserve Live URL Pipeline",
+        description="Protect final callback URL from late polling results",
+        branch="main",
+        repository_url=test_project["repository_url"],
+        project_id=test_project["id"],
+        deployment_enabled=True,
+    )
+    run = save_pipeline_run({
+        "id": None,
+        "pipeline_id": pipeline["id"],
+        "pipeline_name": pipeline["name"],
+        "status": "running",
+        "started_at": "2026-11-18T16:00:50+00:00",
+        "completed_at": None,
+        "repository_url": test_project["repository_url"],
+        "branch": "main",
+        "stages": [
+            {**stage, "status": "pending", "details": {}}
+            for stage in DEFAULT_STAGES
+        ],
+    })
+    dep = create_deployment(
+        project_id=test_project["id"],
+        pipeline_run_id=run["id"],
+        app_name=test_project["name"],
+        repository_url=test_project["repository_url"],
+        deployment_id="deploy-race-test-001",
+        ecs_service="devsecops-srv-2",
+        ecs_cluster="devsecops-cluster",
+        container_port=8000,
+        status="deploying",
+        health_status="unknown",
+        app_url="",
+    )
+    live_url = "http://13.200.15.218:8000"
+
+    # Final ECS callback arrives with its verified URL.
+    apply_stage_update(
+        run_id=run["id"],
+        stage_id="deployment",
+        status="success",
+        message="Application deployed successfully.",
+        details={
+            "deployment_id": dep["deployment_id"],
+            "app_url": live_url,
+            "ecs_service": "devsecops-srv-2",
+            "ecs_cluster": "devsecops-cluster",
+            "container_port": 8000,
+            "health_status": "healthy",
+            "verified_path": "/health",
+        },
+    )
+
+    # A late background poller update has not found a public IP and sends blanks.
+    apply_stage_update(
+        run_id=run["id"],
+        stage_id="deployment",
+        status="success",
+        message="Stage 9 completed successfully.",
+        details={
+            "deployment_id": dep["deployment_id"],
+            "app_url": "",
+            "ecs_service": "devsecops-srv-2",
+            "ecs_cluster": "devsecops-cluster",
+            "container_port": 8000,
+            "health_status": "unknown",
+        },
+    )
+
+    updated = get_deployment(dep["deployment_id"])
+    assert updated["status"] == "deployed"
+    assert updated["app_url"] == live_url
+    assert updated["health_status"] == "healthy"
+    assert updated["container_port"] == 8000
