@@ -27,6 +27,7 @@ from app.models import (
     update_scan,
     get_db,
     create_deployment,
+    get_deployment,
     update_deployment,
     get_deployments,
     get_latest_deployment,
@@ -722,8 +723,28 @@ def apply_stage_update(
             if app_url:
                 run["app_url"] = app_url
 
-            existing_deps = get_deployments(project_id=project_id) if project_id else []
-            matching_dep = next((d for d in existing_deps if d.get("pipeline_run_id") == run_id), None)
+            # GitHub Actions includes the deployment record ID that was created
+            # when this pipeline was queued. Prefer that exact ID so the callback
+            # updates the visible deployment even when its pipeline has no
+            # project_id association.
+            details_deployment_id = details.get("deployment_id") or run.get("deployment_id")
+            matching_dep = None
+            if details_deployment_id:
+                candidate = get_deployment(details_deployment_id)
+                if candidate and candidate.get("pipeline_run_id") == run_id:
+                    matching_dep = candidate
+
+            # Backward-compatible fallback for older workflow callbacks without
+            # deployment_id, and for deployments that predate this association.
+            if not matching_dep:
+                existing_deps = (
+                    get_deployments(project_id=project_id)
+                    if project_id else get_deployments()
+                )
+                matching_dep = next(
+                    (d for d in existing_deps if d.get("pipeline_run_id") == run_id),
+                    None,
+                )
             dep_id = None
             if matching_dep:
                 dep_id = matching_dep["deployment_id"]

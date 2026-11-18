@@ -459,3 +459,76 @@ def test_sync_recovers_ecs_live_url_when_completed_deployment_has_no_url(client,
         cluster_name="devsecops-cluster",
         service_name=f"devsecops-srv-{pipeline['id']}",
     )
+
+
+
+def test_callback_matches_explicit_deployment_id_without_project_link(client, test_project):
+    """The ECS workflow's deployment_id must update the existing dashboard card."""
+    secret = "test-callback-secret-explicit-deployment"
+
+    pipeline = create_pipeline_record(
+        name="Unlinked Project ECS Pipeline",
+        description="Pipeline with no project association",
+        branch="main",
+        repository_url=test_project["repository_url"],
+        project_id=None,
+        deployment_enabled=True,
+    )
+    run = save_pipeline_run({
+        "id": None,
+        "pipeline_id": pipeline["id"],
+        "pipeline_name": pipeline["name"],
+        "status": "running",
+        "started_at": "2026-11-18T10:00:00+00:00",
+        "completed_at": None,
+        "repository_url": test_project["repository_url"],
+        "branch": "main",
+        "stages": [
+            {**stage, "status": "pending", "details": {}}
+            for stage in DEFAULT_STAGES
+        ],
+    })
+    dep = create_deployment(
+        project_id=None,
+        pipeline_run_id=run["id"],
+        app_name="My First Project",
+        repository_url=test_project["repository_url"],
+        container_port=8000,
+        status="deploying",
+    )
+    run["deployment_id"] = dep["deployment_id"]
+    save_pipeline_run(run)
+
+    url = "http://65.0.108.213:8000"
+    headers = {
+        "Authorization": f"Bearer {secret}",
+        "Content-Type": "application/json",
+    }
+    before_count = len(get_deployments())
+
+    with patch.dict(os.environ, {"GITHUB_CALLBACK_SECRET": secret}):
+        response = client.post(
+            f"/api/pipelines/runs/{run['id']}/github-status",
+            headers=headers,
+            json={
+                "stage": "deployment",
+                "status": "success",
+                "message": "Application deployed successfully to AWS ECS Fargate.",
+                "details": {
+                    "deployment_id": dep["deployment_id"],
+                    "app_url": url,
+                    "ecs_service": f"devsecops-srv-{pipeline['id']}",
+                    "ecs_cluster": "devsecops-cluster",
+                    "container_port": 8000,
+                    "health_status": "healthy",
+                },
+            },
+        )
+
+    assert response.status_code == 200
+    updated = get_deployment(dep["deployment_id"])
+    assert updated["status"] == "deployed"
+    assert updated["health_status"] == "healthy"
+    assert updated["app_url"] == url
+    assert updated["container_port"] == 8000
+    assert len(get_deployments()) == before_count
