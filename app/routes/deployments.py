@@ -226,7 +226,17 @@ def sync_deployment_status(dep):
                 if not isinstance(stage_details, dict):
                     stage_details = {}
 
-                app_url = run.get("app_url") or dep.get("app_url") or ""
+                # The deployment success callback stores the authoritative URL
+                # in the deployment stage details. Prefer that value so a
+                # successful callback is not lost when the run-level app_url
+                # field is blank or was not synchronized.
+                app_url = (
+                    stage_details.get("app_url")
+                    or stage_details.get("url")
+                    or run.get("app_url")
+                    or dep.get("app_url")
+                    or ""
+                )
                 ecs_service = (
                     dep.get("ecs_service")
                     or stage_details.get("ecs_service")
@@ -255,7 +265,10 @@ def sync_deployment_status(dep):
                     updated = update_deployment(
                         dep_id,
                         status="deployed",
-                        health_status=stage_details.get("health_status") or "healthy",
+                        health_status=(
+                            stage_details.get("health_status")
+                            or ("healthy" if stage_details.get("verified_path") else "unknown")
+                        ),
                         app_url=app_url,
                         ecs_service=ecs_service,
                         ecs_cluster=ecs_cluster,

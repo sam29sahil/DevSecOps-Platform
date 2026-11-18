@@ -640,3 +640,67 @@ def test_find_github_run_for_pipeline_run_ignores_older_workflow_run():
             matched = _find_github_run_for_pipeline_run(pipeline_run)
 
     assert matched["id"] == 44333379706
+
+
+
+def test_sync_uses_live_url_saved_in_deployment_stage_details(client, test_project):
+    """Recover the callback URL even when pipeline_runs.app_url is blank."""
+    from app.routes.deployments import sync_deployment_status
+
+    pipeline = create_pipeline_record(
+        name="Stage Details URL Recovery",
+        description="Deployment callback URL is stored in stage details",
+        branch="main",
+        repository_url=test_project["repository_url"],
+        project_id=test_project["id"],
+        deployment_enabled=True,
+    )
+    live_url = "http://13.127.240.55:8000"
+    run = save_pipeline_run({
+        "id": None,
+        "pipeline_id": pipeline["id"],
+        "pipeline_name": pipeline["name"],
+        "status": "success",
+        "started_at": "2026-11-18T15:31:42+00:00",
+        "completed_at": "2026-11-18T15:35:11+00:00",
+        "repository_url": test_project["repository_url"],
+        "branch": "main",
+        "app_url": "",
+        "stages": [{
+            "id": "deployment",
+            "name": "Deployment",
+            "status": "success",
+            "details": {
+                "app_url": live_url,
+                "deployment_id": "deploy-5f9fc7f7",
+                "ecs_service": "devsecops-srv-1",
+                "ecs_cluster": "devsecops-cluster",
+                "container_port": 8000,
+                "health_status": "healthy",
+                "verified_path": "/health",
+            },
+        }],
+    })
+    dep = create_deployment(
+        project_id=test_project["id"],
+        pipeline_run_id=run["id"],
+        app_name=test_project["name"],
+        repository_url=test_project["repository_url"],
+        deployment_id="deploy-5f9fc7f7",
+        ecs_service="devsecops-srv-1",
+        ecs_cluster="devsecops-cluster",
+        container_port=8000,
+        status="deployed",
+        health_status="unknown",
+        app_url="",
+    )
+
+    with patch("app.routes.deployments.AwsService") as mock_aws:
+        synced = sync_deployment_status(dep)
+
+    assert synced["deployment_id"] == "deploy-5f9fc7f7"
+    assert synced["status"] == "deployed"
+    assert synced["app_url"] == live_url
+    assert synced["health_status"] == "healthy"
+    assert synced["container_port"] == 8000
+    mock_aws.assert_not_called()
