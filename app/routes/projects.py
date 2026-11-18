@@ -102,11 +102,11 @@ def create_new_project():
         data.get("source_directory", ".")
     ).strip() or "."
 
-    app_port = data.get("app_port", 5000)
+    app_port = data.get("app_port", 8000)
     try:
-        app_port = int(app_port) if app_port else 5000
+        app_port = int(app_port) if app_port else 8000
     except (ValueError, TypeError):
-        app_port = 5000
+        app_port = 8000
 
     app_type = str(data.get("app_type", "web")).strip() or "web"
     dockerfile_path = str(data.get("dockerfile_path", "Dockerfile")).strip() or "Dockerfile"

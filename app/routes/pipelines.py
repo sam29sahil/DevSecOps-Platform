@@ -24,6 +24,7 @@ from app.models import (
     get_findings,
     get_project,
     get_projects,
+    update_project,
     update_scan,
     get_db,
     create_deployment,
@@ -524,6 +525,58 @@ def safe_int(value, default=None):
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _ensure_project_container_port(project):
+    """
+    Keep the password_web_checker sample application on its Docker port 8000.
+    Normalize older saved project records before the deployment record is
+    created and before the container port is sent to GitHub Actions. Other
+    repositories retain their configured ports.
+    """
+    if not isinstance(project, dict):
+        return project
+
+    repository_url = str(project.get("repository_url") or "").strip()
+    parsed = urlsplit(repository_url)
+    repository_path = parsed.path.strip("/").removesuffix(".git").lower()
+
+    if (
+        parsed.scheme.lower() != "https"
+        or parsed.netloc.lower() not in ("github.com", "www.github.com")
+        or repository_path != "sam29sahil/password_web_checker"
+    ):
+        return project
+
+    current_port = safe_int(project.get("app_port"), None)
+    if current_port == 8000:
+        return project
+
+    updated = update_project(
+        project_id=project["id"],
+        name=project.get("name", ""),
+        description=project.get("description", "") or "",
+        repository_url=repository_url,
+        branch=project.get("branch", "main") or "main",
+        source_directory=project.get("source_directory", ".") or ".",
+        status=project.get("status", "active") or "active",
+        app_port=8000,
+        app_type=project.get("app_type"),
+        dockerfile_path=project.get("dockerfile_path"),
+        build_context=project.get("build_context"),
+        health_check_path=project.get("health_check_path"),
+    )
+    if not updated:
+        raise RuntimeError(
+            "Could not update password_web_checker project to container port 8000."
+        )
+
+    logger.info(
+        "[PROJECT-CONFIG] Normalized project_id=%s app_port=%s -> 8000",
+        project.get("id"),
+        current_port,
+    )
+    return updated
 
 
 def find_pipeline(pipeline_id):
@@ -2914,6 +2967,10 @@ def run_pipeline(pipeline_id):
                 "error": "Project not found.",
             }
         ), 404
+
+    # This sample app's Dockerfile and the shared ECS security group use 8000.
+    # Correct stale saved values (for example 7998) before creating a deploy.
+    project = _ensure_project_container_port(project)
 
     repo_url = pipeline.get("repository_url", "")
     if not is_valid_github_url(repo_url):

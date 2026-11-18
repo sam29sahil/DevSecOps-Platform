@@ -4,13 +4,14 @@ from unittest.mock import Mock, patch
 import pytest
 
 from app import create_app
-from app.models import get_db, create_project
+from app.models import get_db, create_project, get_project
 from app.routes.pipelines import (
     is_valid_github_url,
     dispatch_github_workflow,
     create_pipeline_record,
     get_pipeline_run,
     get_pipeline,
+    _ensure_project_container_port,
 )
 
 
@@ -525,3 +526,34 @@ def test_sync_pipeline_run_endpoint(client, test_pipeline):
     assert sync_resp.get_json()["success"] is True
 
 
+
+
+
+def test_password_web_checker_project_port_is_normalized_to_8000():
+    project = create_project(
+        name="Password Web Checker",
+        description="Sample Flask application",
+        repository_url="https://github.com/sam29sahil/password_web_checker.git",
+        branch="main",
+        app_port=7998,
+    )
+
+    normalized = _ensure_project_container_port(project)
+
+    assert normalized["app_port"] == 8000
+    assert get_project(project["id"])["app_port"] == 8000
+
+
+def test_other_project_keeps_its_configured_container_port():
+    project = create_project(
+        name="Other App",
+        description="A different sample application",
+        repository_url="https://github.com/example/other-app.git",
+        branch="main",
+        app_port=7998,
+    )
+
+    normalized = _ensure_project_container_port(project)
+
+    assert normalized["app_port"] == 7998
+    assert get_project(project["id"])["app_port"] == 7998

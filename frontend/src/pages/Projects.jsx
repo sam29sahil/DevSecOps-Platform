@@ -41,7 +41,7 @@ function Projects() {
     branch: "main",
     repository_url: "",
     description: "",
-    app_port: 5000,
+    app_port: 8000,
     dockerfile_path: "Dockerfile",
     build_context: ".",
     health_check_path: "/",
@@ -118,7 +118,7 @@ function Projects() {
       branch: "main",
       repository_url: "",
       description: "",
-      app_port: 5000,
+      app_port: 8000,
       dockerfile_path: "Dockerfile",
       build_context: ".",
       health_check_path: "/",
@@ -578,11 +578,11 @@ function Projects() {
                   onChange={
                     handleChange
                   }
-                  placeholder="5000"
+                  placeholder="8000"
                 />
 
                 <span style={{ fontSize: "11px", color: "#64748b", marginTop: "4px", display: "block" }}>
-                  Port your app listens on (e.g. 5000 for Flask, 3000 for Node/React, 8000 for Django, 80 for Nginx).
+                  Port your app listens on. New projects default to 8000; change it only when your container listens on a different port.
                 </span>
 
               </div>
