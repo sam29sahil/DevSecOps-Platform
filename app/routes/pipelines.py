@@ -3885,11 +3885,50 @@ def github_status_callback(run_id):
             "error": err,
         }), code
 
-    return jsonify({
+    response_payload = {
         "success": True,
         "message": f"Stage '{stage_id}' updated to '{status}'.",
         "run": updated_run,
-    }), 200
+    }
+
+    # Return the persisted deployment row with the final callback so GitHub
+    # Actions can verify that the live URL reached the dashboard database.
+    if stage_id == "deployment" and status == "success":
+        expected_url = details.get("app_url") or details.get("url")
+        deployment_id = details.get("deployment_id") or updated_run.get("deployment_id")
+        saved_deployment = get_deployment(deployment_id) if deployment_id else None
+
+        if saved_deployment and saved_deployment.get("pipeline_run_id") == run_id:
+            if expected_url and saved_deployment.get("app_url") != expected_url:
+                saved_deployment = update_deployment(
+                    saved_deployment["id"],
+                    status="deployed",
+                    app_url=expected_url,
+                    health_status=details.get("health_status") or "healthy",
+                    ecs_service=details.get("ecs_service") or saved_deployment.get("ecs_service"),
+                    ecs_cluster=details.get("ecs_cluster") or saved_deployment.get("ecs_cluster"),
+                    container_port=details.get("container_port") or saved_deployment.get("container_port") or 5000,
+                    completed_at=utc_now(),
+                )
+            response_payload["deployment"] = saved_deployment
+
+        if expected_url and (
+            not response_payload.get("deployment")
+            or response_payload["deployment"].get("app_url") != expected_url
+        ):
+            logger.error(
+                "[GITHUB-CALLBACK] Deployment URL was not persisted for run=%s, deployment_id=%s.",
+                run_id,
+                deployment_id,
+            )
+            return jsonify({
+                "success": False,
+                "error": "Deployment callback was received, but the live URL could not be confirmed in the deployment record.",
+                "run": updated_run,
+                "deployment": saved_deployment,
+            }), 500
+
+    return jsonify(response_payload), 200
 
 
 @pipelines_bp.post("/runs/<int:run_id>/sync")

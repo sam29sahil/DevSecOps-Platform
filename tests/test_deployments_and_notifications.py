@@ -290,6 +290,10 @@ def test_callback_updates_live_url_and_deployment(client, test_project):
         assert updated_dep["health_status"] == "healthy"
         assert updated_dep["app_url"] == live_url
         assert updated_dep["deployment_id"] == dep["deployment_id"]
+        callback_payload = cb_res.get_json()
+        assert callback_payload["success"] is True
+        assert callback_payload["deployment"]["app_url"] == live_url
+        assert callback_payload["deployment"]["deployment_id"] == dep["deployment_id"]
 
         # Verify persistent notification was generated
         notifs = get_notifications()

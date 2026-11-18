@@ -162,7 +162,22 @@ jobs:
           BODY=$(echo "${RESPONSE}" | sed '$d')
 
           if [ "${HTTP_CODE}" -ge 200 ] && [ "${HTTP_CODE}" -lt 300 ]; then
-            echo "[CALLBACK] Successfully updated stage '${STAGE}' (HTTP ${HTTP_CODE})."
+            if ! echo "${BODY}" | jq -e '.success == true' >/dev/null 2>&1; then
+              echo "[CALLBACK] Warning: HTTP ${HTTP_CODE} did not contain a successful API response: ${BODY}"
+              exit 0
+            fi
+
+            if [ "${STAGE}" = "deployment" ] && [ "${STATUS}" = "success" ]; then
+              EXPECTED_URL=$(echo "${DETAILS}" | jq -r '.app_url // .url // empty')
+              SAVED_URL=$(echo "${BODY}" | jq -r '.deployment.app_url // empty')
+              if [ -n "${EXPECTED_URL}" ] && [ "${SAVED_URL}" != "${EXPECTED_URL}" ]; then
+                echo "[CALLBACK] ERROR: ECS URL ${EXPECTED_URL} was not confirmed in the dashboard database (saved='${SAVED_URL}')."
+                exit 0
+              fi
+              echo "[CALLBACK] Live URL saved to deployment record: ${SAVED_URL}"
+            else
+              echo "[CALLBACK] Successfully updated stage '${STAGE}' (HTTP ${HTTP_CODE})."
+            fi
           else
             echo "[CALLBACK] Warning: Server returned HTTP ${HTTP_CODE}: ${BODY}"
           fi
