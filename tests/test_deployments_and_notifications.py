@@ -598,3 +598,45 @@ def test_callback_recreates_missing_deployment_with_workflow_deployment_id(clien
     assert created["app_url"] == live_url
     assert created["status"] == "deployed"
     assert created["container_port"] == 8000
+
+
+
+def test_find_github_run_for_pipeline_run_ignores_older_workflow_run():
+    from app.routes.deployments import _find_github_run_for_pipeline_run
+
+    pipeline_run = {
+        "id": 1,
+        "pipeline_id": 1,
+        "started_at": "2026-11-18T15:14:44+00:00",
+        "completed_at": "2026-11-18T15:17:42+00:00",
+        "github_run_id": 44331431900,
+        "github_run_url": "https://github.com/sam29sahil/DevSecOps-Platform/actions/runs/44331431900",
+    }
+    response = type("Response", (), {
+        "status_code": 200,
+        "json": lambda self: {
+            "workflow_runs": [
+                {
+                    "id": 44331431900,
+                    "display_title": "DevSecOps Pipeline",
+                    "created_at": "2026-11-18T15:04:48Z",
+                    "html_url": "https://github.com/sam29sahil/DevSecOps-Platform/actions/runs/44331431900",
+                },
+                {
+                    "id": 44333379706,
+                    "display_title": "DevSecOps Pipeline",
+                    "created_at": "2026-11-18T15:14:47Z",
+                    "html_url": "https://github.com/sam29sahil/DevSecOps-Platform/actions/runs/44333379706",
+                },
+            ]
+        },
+    })()
+
+    with patch.dict(os.environ, {
+        "GITHUB_TOKEN": "test-token",
+        "GITHUB_REPOSITORY": "sam29sahil/DevSecOps-Platform",
+    }):
+        with patch("app.routes.deployments.requests.get", return_value=response):
+            matched = _find_github_run_for_pipeline_run(pipeline_run)
+
+    assert matched["id"] == 44333379706

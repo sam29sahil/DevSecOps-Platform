@@ -169,9 +169,12 @@ export default function Deployments() {
   useEffect(() => {
     loadData(false);
     const interval = setInterval(() => {
-      const hasActive = (deploymentsRef.current || []).some((d) =>
-        ACTIVE_STATUSES.has(String(d.status || "").toLowerCase())
-      );
+      const hasActive = (deploymentsRef.current || []).some((d) => {
+        const status = String(d.status || "").toLowerCase();
+        const waitingForLiveUrl =
+          ["running", "deployed"].includes(status) && !d.app_url;
+        return ACTIVE_STATUSES.has(status) || waitingForLiveUrl;
+      });
       if (hasActive && !isFetchingRef.current) {
         loadData(true);
       }

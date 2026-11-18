@@ -1,7 +1,7 @@
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import requests
 from flask import Blueprint, jsonify, request, g
 from botocore.exceptions import ClientError, NoCredentialsError
@@ -47,6 +47,90 @@ def _parse_iso_utc(date_str):
         return None
 
 
+def _find_github_run_for_pipeline_run(run):
+    """Find the GitHub Actions run that belongs to this exact internal pipeline run."""
+    if not isinstance(run, dict):
+        return None
+
+    github_token = os.getenv("GITHUB_TOKEN", "").strip()
+    github_repo = os.getenv("GITHUB_REPOSITORY", "sam29sahil/DevSecOps-Platform").strip()
+    if not github_token or "/" not in github_repo:
+        return None
+
+    pipeline_id = run.get("pipeline_id")
+    pipeline_run_id = run.get("id")
+    headers = {
+        "Authorization": f"Bearer {github_token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    try:
+        response = requests.get(
+            f"https://api.github.com/repos/{github_repo}/actions/workflows/"
+            "devsecops-pipeline.yml/runs?event=workflow_dispatch&per_page=20",
+            headers=headers,
+            timeout=8,
+        )
+        if response.status_code != 200:
+            return None
+        workflow_runs = response.json().get("workflow_runs", [])
+    except Exception as exc:
+        logger.debug("[DEPLOYMENT-SYNC] Could not query GitHub workflow runs: %s", exc)
+        return None
+
+    # Newer workflow versions put both IDs in run-name, giving an exact match.
+    expected_title = (
+        f"DevSecOps Pipeline - pipeline {pipeline_id} run {pipeline_run_id}"
+    )
+    exact = next(
+        (
+            item for item in workflow_runs
+            if str(item.get("display_title") or "").strip() == expected_title
+        ),
+        None,
+    )
+    if exact and exact.get("id"):
+        return exact
+
+    # Repair older workflow runs that had no run-name. Their created_at must
+    # fall after this pipeline execution began; this rejects older stale IDs.
+    started_at = _parse_iso_utc(run.get("started_at"))
+    if not started_at:
+        return None
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
+    else:
+        started_at = started_at.astimezone(timezone.utc)
+
+    completed_at = _parse_iso_utc(run.get("completed_at"))
+    if completed_at:
+        if completed_at.tzinfo is None:
+            completed_at = completed_at.replace(tzinfo=timezone.utc)
+        else:
+            completed_at = completed_at.astimezone(timezone.utc)
+        upper_bound = completed_at + timedelta(minutes=5)
+    else:
+        upper_bound = datetime.now(timezone.utc) + timedelta(minutes=5)
+
+    lower_bound = started_at - timedelta(seconds=30)
+    candidates = []
+    for item in workflow_runs:
+        created_at = _parse_iso_utc(item.get("created_at"))
+        if not created_at:
+            continue
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        else:
+            created_at = created_at.astimezone(timezone.utc)
+        if lower_bound <= created_at <= upper_bound and item.get("id"):
+            candidates.append((abs((created_at - started_at).total_seconds()), item))
+
+    if not candidates:
+        return None
+    candidates.sort(key=lambda pair: pair[0])
+    return candidates[0][1]
+
+
 def sync_deployment_status(dep):
     """
     Synchronize an active deployment record with real-world execution state:
@@ -84,11 +168,26 @@ def sync_deployment_status(dep):
             run = None
 
     if run:
-        # Sync GitHub run ID/URL if discovered on pipeline run
-        gh_id = run.get("github_run_id")
-        gh_url = run.get("github_run_url")
-        if gh_id and not dep.get("github_run_id"):
-            logger.info("[DEPLOYMENT-SYNC] Correlating discovered GitHub run ID %s to deployment %s", gh_id, dep_id)
+        # Reconcile GitHub's run ID against the internal pipeline run. This
+        # repairs older records where the background poller attached the
+        # newest unrelated workflow_dispatch run.
+        discovered_run = _find_github_run_for_pipeline_run(run)
+        gh_id = (
+            discovered_run.get("id")
+            if discovered_run else run.get("github_run_id")
+        )
+        gh_url = (
+            discovered_run.get("html_url")
+            if discovered_run else run.get("github_run_url")
+        )
+        if gh_id and str(gh_id) != str(dep.get("github_run_id") or ""):
+            logger.info(
+                "[DEPLOYMENT-SYNC] Updating deployment %s GitHub run reference "
+                "from %s to %s.",
+                dep_id,
+                dep.get("github_run_id"),
+                gh_id,
+            )
             update_deployment(dep_id, github_run_id=gh_id, github_run_url=gh_url)
             dep["github_run_id"] = gh_id
             dep["github_run_url"] = gh_url
