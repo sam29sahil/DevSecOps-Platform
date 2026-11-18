@@ -117,3 +117,52 @@ def test_aws_routes_return_mocked_ecr_data(ecr_client):
     assert ecr_response.get_json()["repository"]["name"] == "devsecops-platform"
     assert images_response.status_code == 200
     assert images_response.get_json()["images"][0]["digest"] == "sha256:abc"
+
+
+
+def test_get_ecs_service_public_ip_uses_only_running_tasks():
+    ecr_client = Mock()
+    ecs_client = Mock()
+    ec2_client = Mock()
+    ecs_client.list_tasks.return_value = {
+        "taskArns": ["task-stopped", "task-running"]
+    }
+    ecs_client.describe_tasks.return_value = {
+        "tasks": [
+            {
+                "taskArn": "task-stopped",
+                "lastStatus": "STOPPED",
+                "desiredStatus": "STOPPED",
+                "attachments": [{
+                    "details": [{"name": "networkInterfaceId", "value": "eni-stopped"}]
+                }],
+            },
+            {
+                "taskArn": "task-running",
+                "lastStatus": "RUNNING",
+                "desiredStatus": "RUNNING",
+                "attachments": [{
+                    "details": [{"name": "networkInterfaceId", "value": "eni-running"}]
+                }],
+            },
+        ]
+    }
+    ec2_client.describe_network_interfaces.return_value = {
+        "NetworkInterfaces": [{"Association": {"PublicIp": "13.232.100.200"}}]
+    }
+
+    service = AwsService(
+        client=ecr_client,
+        ecs_client=ecs_client,
+        ec2_client=ec2_client,
+    )
+
+    result = service.get_ecs_service_public_ip(
+        cluster_name="devsecops-cluster",
+        service_name="devsecops-srv-12",
+    )
+
+    assert result == "13.232.100.200"
+    ec2_client.describe_network_interfaces.assert_called_once_with(
+        NetworkInterfaceIds=["eni-running"]
+    )

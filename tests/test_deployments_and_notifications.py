@@ -399,3 +399,63 @@ def test_pending_timeout_transitions_to_failed(client, test_project):
     assert synced["status"] == "failed"
     assert "timed out" in synced["error_message"].lower()
 
+
+
+
+def test_sync_recovers_ecs_live_url_when_completed_deployment_has_no_url(client, test_project):
+    from app.routes.deployments import sync_deployment_status
+
+    pipeline = create_pipeline_record(
+        name="URL Recovery Pipeline",
+        description="Recover missing ECS live URL",
+        branch="main",
+        repository_url=test_project["repository_url"],
+        project_id=test_project["id"],
+        deployment_enabled=True,
+    )
+    run = save_pipeline_run({
+        "id": None,
+        "pipeline_id": pipeline["id"],
+        "pipeline_name": pipeline["name"],
+        "status": "success",
+        "started_at": "2026-11-18T10:00:00+00:00",
+        "completed_at": "2026-11-18T10:05:00+00:00",
+        "repository_url": test_project["repository_url"],
+        "branch": "main",
+        "stages": [{
+            "id": "deployment",
+            "name": "Deployment",
+            "status": "success",
+            "details": {},
+        }],
+    })
+    dep = create_deployment(
+        project_id=test_project["id"],
+        pipeline_run_id=run["id"],
+        app_name=test_project["name"],
+        repository_url=test_project["repository_url"],
+        status="deployed",
+        app_url="",
+        container_port=8080,
+    )
+
+    with patch("app.routes.deployments.AwsService") as mock_aws:
+        aws_service = mock_aws.return_value
+        aws_service.describe_ecs_service.return_value = {
+            "running_count": 1,
+            "status": "ACTIVE",
+        }
+        aws_service.get_ecs_service_public_ip.return_value = "13.232.100.200"
+        aws_service.verify_application_health.return_value = {"healthy": True}
+
+        synced = sync_deployment_status(dep)
+
+    expected_url = "http://13.232.100.200:8080"
+    assert synced["status"] == "deployed"
+    assert synced["app_url"] == expected_url
+    assert synced["ecs_service"] == f"devsecops-srv-{pipeline['id']}"
+    assert synced["container_port"] == 8080
+    aws_service.describe_ecs_service.assert_called_once_with(
+        cluster_name="devsecops-cluster",
+        service_name=f"devsecops-srv-{pipeline['id']}",
+    )

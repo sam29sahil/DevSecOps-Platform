@@ -65,8 +65,11 @@ def sync_deployment_status(dep):
 
     logger.debug("[DEPLOYMENT-SYNC] Evaluating sync for deployment=%s, current_status=%s", dep_id, current_status)
 
-    # Terminal states do not need lifecycle transition reconciliation
-    if current_status in ("deployed", "running", "failed", "stopped"):
+    # Failed/stopped records are terminal. A deployed/running record with no
+    # URL is not fully usable yet, so keep reconciling it against ECS.
+    if current_status in ("failed", "stopped") or (
+        current_status in ("deployed", "running") and dep.get("app_url")
+    ):
         return dep
 
     # 1. Inspect associated pipeline run
@@ -120,16 +123,72 @@ def sync_deployment_status(dep):
             stage_status = dep_stage.get("status")
 
             if stage_status == "success":
+                stage_details = dep_stage.get("details") or {}
+                if not isinstance(stage_details, dict):
+                    stage_details = {}
+
                 app_url = run.get("app_url") or dep.get("app_url") or ""
-                logger.info("[DEPLOYMENT-SYNC] Pipeline run %s succeeded. Deployment %s RUNNING with app_url=%s", pipeline_run_id, dep_id, app_url)
+                ecs_service = (
+                    dep.get("ecs_service")
+                    or stage_details.get("ecs_service")
+                    or (
+                        f"devsecops-srv-{run.get('pipeline_id')}"
+                        if run.get("pipeline_id") else None
+                    )
+                )
+                ecs_cluster = (
+                    dep.get("ecs_cluster")
+                    or stage_details.get("ecs_cluster")
+                    or os.getenv("AWS_ECS_CLUSTER", "devsecops-cluster")
+                )
+                container_port = (
+                    dep.get("container_port")
+                    or stage_details.get("container_port")
+                    or 5000
+                )
+                try:
+                    container_port = int(container_port)
+                except (TypeError, ValueError):
+                    container_port = 5000
+
+                if app_url:
+                    logger.info("[DEPLOYMENT-SYNC] Pipeline run %s succeeded. Deployment %s has app_url=%s", pipeline_run_id, dep_id, app_url)
+                    updated = update_deployment(
+                        dep_id,
+                        status="deployed",
+                        health_status=stage_details.get("health_status") or "healthy",
+                        app_url=app_url,
+                        ecs_service=ecs_service,
+                        ecs_cluster=ecs_cluster,
+                        container_port=container_port,
+                        completed_at=utc_now(),
+                    )
+                    return updated or dep
+
+                # The workflow completed but did not send its URL callback.
+                # Persist its ECS coordinates and continue to live IP discovery.
+                logger.warning(
+                    "[DEPLOYMENT-SYNC] Deployment %s succeeded without app_url; "
+                    "attempting ECS discovery for service=%s.",
+                    dep_id,
+                    ecs_service,
+                )
                 updated = update_deployment(
                     dep_id,
                     status="deployed",
-                    health_status="healthy",
-                    app_url=app_url,
+                    health_status=stage_details.get("health_status") or "unknown",
+                    ecs_service=ecs_service,
+                    ecs_cluster=ecs_cluster,
+                    container_port=container_port,
                     completed_at=utc_now(),
                 )
-                return updated or dep
+                dep = updated or {
+                    **dep,
+                    "status": "deployed",
+                    "ecs_service": ecs_service,
+                    "ecs_cluster": ecs_cluster,
+                    "container_port": container_port,
+                }
 
             elif stage_status == "skipped":
                 msg = dep_stage.get("message") or "Deployment stage was skipped in pipeline."
@@ -280,7 +339,10 @@ def sync_deployment_status(dep):
 
     # 3. Check ECS service status directly ONLY AFTER deployment stage has been reached
     current_status = str(dep.get("status") or "").lower()
-    ecs_service = dep.get("ecs_service")
+    ecs_service = dep.get("ecs_service") or (
+        f"devsecops-srv-{run.get('pipeline_id')}"
+        if run and run.get("pipeline_id") else None
+    )
     if current_status in ("deploying", "deployed", "running") and ecs_service:
         try:
             logger.debug("[DEPLOYMENT-SYNC] Checking AWS ECS service status for service=%s...", ecs_service)
@@ -293,14 +355,21 @@ def sync_deployment_status(dep):
                 if running_count > 0:
                     ip = aws_svc.get_ecs_service_public_ip(cluster_name=cluster, service_name=ecs_service)
                     if ip:
-                        app_url = f"http://{ip}:{dep.get('container_port', 5000)}"
+                        try:
+                            container_port = int(dep.get("container_port") or 5000)
+                        except (TypeError, ValueError):
+                            container_port = 5000
+                        app_url = f"http://{ip}:{container_port}"
                         health = aws_svc.verify_application_health(app_url)
-                        logger.info("[DEPLOYMENT-SYNC] Verified active ECS task for %s at %s (healthy=%s)", ecs_service, app_url, health.get("healthy"))
+                        logger.info("[DEPLOYMENT-SYNC] Discovered ECS application URL for %s: %s (healthy=%s)", ecs_service, app_url, health.get("healthy"))
                         return update_deployment(
                             dep_id,
                             status="deployed",
                             health_status="healthy" if health.get("healthy") else "unhealthy",
                             app_url=app_url,
+                            ecs_service=ecs_service,
+                            ecs_cluster=cluster,
+                            container_port=container_port,
                             completed_at=utc_now(),
                         ) or dep
                 elif svc_info.get("status") == "INACTIVE":
@@ -356,7 +425,9 @@ def list_deployments():
     deployments = []
     for d in raw_deployments:
         status_norm = str(d.get("status") or "").lower()
-        if status_norm in ("pending", "queued", "building", "scanning", "pushing", "deploying"):
+        if status_norm in ("pending", "queued", "building", "scanning", "pushing", "deploying") or (
+            status_norm in ("deployed", "running") and not d.get("app_url")
+        ):
             d = sync_deployment_status(d)
         deployments.append(d)
 
@@ -421,7 +492,9 @@ def get_single_deployment(identifier):
         }), 404
 
     status_norm = str(deployment.get("status") or "").lower()
-    if status_norm in ("pending", "queued", "building", "scanning", "pushing", "deploying"):
+    if status_norm in ("pending", "queued", "building", "scanning", "pushing", "deploying") or (
+        status_norm in ("deployed", "running") and not deployment.get("app_url")
+    ):
         deployment = sync_deployment_status(deployment)
 
     if not check_ownership(deployment.get("user_id")):

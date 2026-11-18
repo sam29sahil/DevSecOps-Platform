@@ -735,6 +735,7 @@ def apply_stage_update(
                     image_uri=details.get("image") or run.get("registry_image") or matching_dep.get("image_uri"),
                     ecs_service=details.get("ecs_service") or matching_dep.get("ecs_service"),
                     ecs_cluster=details.get("ecs_cluster") or matching_dep.get("ecs_cluster"),
+                    container_port=details.get("container_port") or matching_dep.get("container_port") or 5000,
                     completed_at=utc_now(),
                 )
             else:
@@ -953,7 +954,13 @@ def poll_github_workflow_run(
                                 stage_id="deployment",
                                 status="success",
                                 message="Discovered live application URL.",
-                                details={"app_url": live_url, "health_status": "healthy"},
+                                details={
+                                    "app_url": live_url,
+                                    "health_status": "healthy",
+                                    "ecs_service": f"devsecops-srv-{pipeline_id}",
+                                    "ecs_cluster": os.getenv("AWS_ECS_CLUSTER", "devsecops-cluster"),
+                                    "container_port": container_port,
+                                },
                             )
                     except Exception as e:
                         logger.warning("[GITHUB-POLL] Failed resolving public IP: %s", e)

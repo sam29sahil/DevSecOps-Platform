@@ -147,10 +147,15 @@ jobs:
 
           echo "[CALLBACK] Stage: ${STAGE} | Status: ${STATUS} | Run: ${RUN_ID}"
 
-          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${CALLBACK_URL}/api/pipelines/runs/${RUN_ID}/github-status" \
+          if ! RESPONSE=$(curl --silent --show-error --retry 3 --retry-all-errors --retry-delay 2 \
+            --connect-timeout 10 --max-time 30 -w "\n%{http_code}" \
+            -X POST "${CALLBACK_URL}/api/pipelines/runs/${RUN_ID}/github-status" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${CALLBACK_SECRET}" \
-            -d "${PAYLOAD}")
+            -d "${PAYLOAD}"); then
+            echo "[CALLBACK] Warning: callback endpoint could not be reached after retries. ECS deployment will continue; the dashboard can recover the URL from ECS."
+            exit 0
+          fi
 
           HTTP_CODE=$(echo "${RESPONSE}" | tail -n1)
           BODY=$(echo "${RESPONSE}" | sed '$d')

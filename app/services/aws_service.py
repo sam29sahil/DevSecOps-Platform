@@ -356,7 +356,19 @@ class AwsService:
                 tasks=task_arns[:5],
             ).get("tasks", [])
 
-            for task in tasks_desc:
+            running_tasks = [
+                task
+                for task in tasks_desc
+                if task.get("lastStatus") == "RUNNING"
+                and task.get("desiredStatus", "RUNNING") == "RUNNING"
+            ]
+            running_tasks.sort(
+                key=lambda task: task.get("startedAt").timestamp()
+                if task.get("startedAt") else 0,
+                reverse=True,
+            )
+
+            for task in running_tasks:
                 for attachment in task.get("attachments", []):
                     for detail in attachment.get("details", []):
                         if detail.get("name") == "networkInterfaceId":
