@@ -767,6 +767,7 @@ def apply_stage_update(
                     repository_url=run.get("repository_url", ""),
                     branch=run.get("branch", "main"),
                     image_uri=details.get("image") or run.get("registry_image", ""),
+                    deployment_id=details_deployment_id or None,
                     ecs_cluster=details.get("ecs_cluster", "devsecops-cluster"),
                     ecs_service=details.get("ecs_service", ""),
                     container_port=details.get("container_port", 5000),
@@ -915,29 +916,44 @@ def poll_github_workflow_run(
             logger.debug("[GITHUB-POLL] Workflow runs query returned HTTP %s", resp.status_code)
             if resp.status_code == 200:
                 runs_data = resp.json().get("workflow_runs", [])
-                if runs_data:
-                    candidate = runs_data[0]
+                expected_display_title = (
+                    f"DevSecOps Pipeline - pipeline {pipeline_id} run {run_id}"
+                )
+                candidate = next(
+                    (
+                        item for item in runs_data
+                        if str(item.get("display_title") or "").strip()
+                        == expected_display_title
+                    ),
+                    None,
+                )
+                if candidate and candidate.get("id"):
                     github_run_id = candidate["id"]
                     github_run_url = candidate.get("html_url")
-                    logger.info("[GITHUB-POLL] Correlated GitHub Actions workflow run: run_id=%s, html_url=%s for pipeline_run_id=%s", github_run_id, github_run_url, run_id)
+                    logger.info(
+                        "[GITHUB-POLL] Correlated GitHub Actions workflow run %s "
+                        "to pipeline_id=%s, pipeline_run_id=%s.",
+                        github_run_id,
+                        pipeline_id,
+                        run_id,
+                    )
                     break
+                logger.debug(
+                    "[GITHUB-POLL] No GitHub workflow run matched '%s' yet; "
+                    "ignoring unrelated recent workflow_dispatch runs.",
+                    expected_display_title,
+                )
         except Exception as e:
             logger.warning("[GITHUB-POLL] Error polling workflow runs: %s", e)
         time.sleep(3)
 
     if not github_run_id:
-        logger.warning("[GITHUB-POLL] Failed to find GitHub Actions workflow run after 12 attempts for run_id=%s. Marking deployment FAILED.", run_id)
-        if deployment_id:
-            try:
-                update_deployment(
-                    deployment_id,
-                    status="failed",
-                    health_status="failed",
-                    error_message="GitHub Actions workflow run could not be discovered after workflow dispatch.",
-                    completed_at=utc_now(),
-                )
-            except Exception:
-                pass
+        logger.warning(
+            "[GITHUB-POLL] Could not correlate a GitHub Actions run to "
+            "pipeline_run_id=%s after 12 attempts. Leaving github_run_id unset; "
+            "status callbacks can still update the deployment.",
+            run_id,
+        )
         return
 
     # Update pipeline run with discovered github_run_id and github_run_url

@@ -1,4 +1,5 @@
 name: DevSecOps Pipeline
+run-name: DevSecOps Pipeline - pipeline ${{ inputs.pipeline_id }} run ${{ inputs.run_id }}
 
 "on":
   workflow_dispatch:

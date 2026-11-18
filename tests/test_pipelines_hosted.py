@@ -392,6 +392,8 @@ def test_workflow_yaml_structure():
 
     # Check key declarations and inputs
     assert "name: DevSecOps Pipeline" in content
+    assert "run-name: DevSecOps Pipeline - pipeline" in content
+    assert "inputs.run_id" in content
     assert "workflow_dispatch:" in content
     assert "repository_url:" in content
     assert "branch:" in content
@@ -446,9 +448,15 @@ def test_poll_github_workflow_run(client, test_pipeline):
     mock_runs_response.json.return_value = {
         "workflow_runs": [
             {
+                "id": 999887,
+                "display_title": "DevSecOps Pipeline - pipeline 999 run 999",
+                "html_url": "https://github.com/sam29sahil/DevSecOps-Platform/actions/runs/999887",
+            },
+            {
                 "id": 999888,
+                "display_title": f"DevSecOps Pipeline - pipeline {test_pipeline['id']} run {run_id}",
                 "html_url": "https://github.com/sam29sahil/DevSecOps-Platform/actions/runs/999888",
-            }
+            },
         ]
     }
 

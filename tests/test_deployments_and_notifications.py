@@ -263,6 +263,7 @@ def test_callback_updates_live_url_and_deployment(client, test_project):
                 "status": "success",
                 "message": "Application deployed successfully to AWS ECS Fargate.",
                 "details": {
+                    "deployment_id": dep["deployment_id"],
                     "app_url": live_url,
                     "ecs_service": "devsecops-srv-test",
                     "ecs_cluster": "devsecops-cluster",
@@ -283,6 +284,7 @@ def test_callback_updates_live_url_and_deployment(client, test_project):
         assert updated_dep["status"] == "deployed"
         assert updated_dep["health_status"] == "healthy"
         assert updated_dep["app_url"] == live_url
+        assert updated_dep["deployment_id"] == dep["deployment_id"]
 
         # Verify persistent notification was generated
         notifs = get_notifications()
@@ -532,3 +534,67 @@ def test_callback_matches_explicit_deployment_id_without_project_link(client, te
     assert updated["app_url"] == url
     assert updated["container_port"] == 8000
     assert len(get_deployments()) == before_count
+
+
+
+def test_callback_recreates_missing_deployment_with_workflow_deployment_id(client, test_project):
+    secret = "test-callback-secret-recreate-row"
+    stable_deployment_id = "deploy-workflow-12345678"
+
+    pipeline = create_pipeline_record(
+        name="Recreate Deployment Row Pipeline",
+        description="Preserve workflow deployment identity after DB row recreation",
+        branch="main",
+        repository_url=test_project["repository_url"],
+        project_id=test_project["id"],
+        deployment_enabled=True,
+    )
+    run = save_pipeline_run({
+        "id": None,
+        "pipeline_id": pipeline["id"],
+        "pipeline_name": pipeline["name"],
+        "status": "running",
+        "started_at": "2026-11-18T10:00:00+00:00",
+        "completed_at": None,
+        "repository_url": test_project["repository_url"],
+        "branch": "main",
+        "stages": [
+            {**stage, "status": "pending", "details": {}}
+            for stage in DEFAULT_STAGES
+        ],
+    })
+    run["deployment_id"] = stable_deployment_id
+    save_pipeline_run(run)
+
+    headers = {
+        "Authorization": f"Bearer {secret}",
+        "Content-Type": "application/json",
+    }
+    live_url = "http://65.0.108.213:8000"
+
+    with patch.dict(os.environ, {"GITHUB_CALLBACK_SECRET": secret}):
+        response = client.post(
+            f"/api/pipelines/runs/{run['id']}/github-status",
+            headers=headers,
+            json={
+                "stage": "deployment",
+                "status": "success",
+                "message": "Application deployed successfully to AWS ECS Fargate.",
+                "details": {
+                    "deployment_id": stable_deployment_id,
+                    "app_url": live_url,
+                    "ecs_service": f"devsecops-srv-{pipeline['id']}",
+                    "ecs_cluster": "devsecops-cluster",
+                    "container_port": 8000,
+                    "health_status": "healthy",
+                },
+            },
+        )
+
+    assert response.status_code == 200
+    created = get_deployment(stable_deployment_id)
+    assert created is not None
+    assert created["deployment_id"] == stable_deployment_id
+    assert created["app_url"] == live_url
+    assert created["status"] == "deployed"
+    assert created["container_port"] == 8000
